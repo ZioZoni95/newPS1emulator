@@ -10,6 +10,12 @@ uint32_t cpu_load32(Cpu* cpu, uint32_t address) {
     return interconnect_load32(cpu->inter, address);
 }
 
+// NEW: Delegates memory store to the interconnect.
+void cpu_store32(Cpu* cpu, uint32_t address, uint32_t value) {
+    interconnect_store32(cpu->inter, address, value);
+}
+
+
 // --- GPR Accessors ---
 // Reads the value from a specified General Purpose Register (GPR).
 // 'index' is the register number (0-31).
@@ -92,6 +98,189 @@ void op_ori(Cpu* cpu, uint32_t instruction) {
 }
 
 
+
+// SLL: Shift Left Logical (Opcode 0x00, Subfunction 0x00)
+// Shifts register 'rt' left by 'shamt' bits, storing the result in 'rd'.
+// Zeroes are shifted in from the right.
+// Based on Section 2.19
+void op_sll(Cpu* cpu, uint32_t instruction) {
+    // Extract the shift amount (5 bits).
+    uint32_t shamt = instr_shift(instruction);
+    // Extract the source register index (rt) - the value to shift.
+    uint32_t rt = instr_t(instruction);
+    // Extract the destination register index (rd).
+    uint32_t rd = instr_d(instruction);
+
+    // Read the value to be shifted from register rt.
+    uint32_t value_to_shift = cpu_reg(cpu, rt);
+
+    // Perform the logical left shift.
+    uint32_t result = value_to_shift << shamt;
+
+    // Write the result to the destination register rd.
+    cpu_set_reg(cpu, rd, result);
+
+    // Debug print - Note: If rd, rt, and shamt are all 0, this is a NOP.
+    if (rd == 0 && rt == 0 && shamt == 0) {
+         printf("Executed SLL: NOP\n");
+    } else {
+        printf("Executed SLL: R%u = R%u << %u => 0x%08x\n", rd, rt, shamt, result);
+    }
+}
+
+
+void op_addiu(Cpu* cpu, uint32_t instruction) {
+    // Extract the 16-bit immediate and sign-extend it to 32 bits. [cite: 301]
+    uint32_t imm_se = instr_imm_se(instruction);
+    // Extract the target register index (rt) - this is the destination.
+    uint32_t rt = instr_t(instruction);
+    // Extract the source register index (rs).
+    uint32_t rs = instr_s(instruction);
+
+    // Read the value from the source register rs.
+    uint32_t rs_value = cpu_reg(cpu, rs);
+
+    // Perform the addition. Standard C unsigned arithmetic provides wrapping behavior. [cite: 301]
+    uint32_t result = rs_value + imm_se;
+
+    // Write the result back to the target register rt.
+    cpu_set_reg(cpu, rt, result);
+
+    // Debug print.
+    printf("Executed ADDIU: R%u = R%u + %d => 0x%08x\n", rt, rs, (int32_t)imm_se, result);
+}
+
+// J: Jump (Opcode 0b000010 = 0x2)
+// Unconditionally jumps after the delay slot.
+// Updates next_pc, not pc directly.
+// Based on Section 2.22 and corrected for delay slot (§2.23).
+void op_j(Cpu* cpu, uint32_t instruction) {
+    uint32_t target_imm = instr_imm_jump(instruction);
+
+    // Calculate the target address:
+    // Upper 4 bits come from the PC of the instruction *in the delay slot*.
+    // In our new `run_next_instruction`, `cpu->pc` already holds the address
+    // of the delay slot instruction when `op_j` is called.
+    uint32_t target_address = (cpu->pc & 0xF0000000) | (target_imm << 2);
+
+    // Set the NEXT program counter (the one AFTER the delay slot).
+    cpu->next_pc = target_address;
+
+    printf("Executed J: Branch delay slot. Next PC set to 0x%08x\n", target_address);
+}
+
+// OR: Bitwise OR (Opcode 0x00, Subfunction 0x25)
+// Performs a bitwise OR between registers 'rs' and 'rt'. Stores result in 'rd'.
+// Based on Section 2.24
+void op_or(Cpu* cpu, uint32_t instruction) {
+    // Extract the destination register index (rd).
+    uint32_t rd = instr_d(instruction);
+    // Extract the first source register index (rs).
+    uint32_t rs = instr_s(instruction);
+    // Extract the second source register index (rt).
+    uint32_t rt = instr_t(instruction);
+
+    // Read the values from the source registers.
+    uint32_t rs_value = cpu_reg(cpu, rs);
+    uint32_t rt_value = cpu_reg(cpu, rt);
+
+    // Perform the bitwise OR operation.
+    uint32_t result = rs_value | rt_value;
+
+    // Write the result back to the destination register rd.
+    cpu_set_reg(cpu, rd, result);
+
+    // Debug print. (Example from guide: or $1, $zero, $zero => R1 = R0 | R0 => 0)
+    printf("Executed OR: R%u = R%u | R%u => 0x%08x\n", rd, rs, rt, result);
+}
+
+// SW: Store Word (Opcode 0b101011 = 0x2B)
+// Based on Section 2.16, 2.17, 2.18. UPDATE for Cache Isolate (§2.28)
+void op_sw(Cpu* cpu, uint32_t instruction) {
+    // Check cache isolation bit in Status Register (SR) before proceeding
+    // SR Bit 16: IsC - Isolate Cache. If set, memory accesses target cache directly.
+    // For now, we simulate this by ignoring the write entirely. [cite: 390]
+    if ((cpu->sr & 0x10000) != 0) {
+        printf("Executed SW: Ignored (Cache Isolated, SR=0x%08x)\n", cpu->sr);
+        return; // Skip the memory store
+    }
+
+    uint32_t offset = instr_imm_se(instruction);
+    uint32_t rt = instr_t(instruction); // Value to store is in rt
+    uint32_t rs = instr_s(instruction); // Base address is in rs
+    uint32_t base_addr = cpu_reg(cpu, rs);
+    uint32_t value_to_store = cpu_reg(cpu, rt);
+    uint32_t address = base_addr + offset;
+    cpu_store32(cpu, address, value_to_store); // Calls interconnect
+    printf("Executed SW: M[R%u + %d (0x%08x)] = R%u (0x%08x) @ address 0x%08x\n",
+           rs, (int16_t)offset, offset, rt, value_to_store, address);
+}
+
+// MTC0: Move To Coprocessor 0 (Opcode 0x10, Specific MTC0 op 0b00100 in rs field)
+// Moves value from CPU register 'rt' to Coprocessor 0 register 'rd'.
+// Based on Section 2.28 [cite: 382, 387]
+void op_mtc0(Cpu* cpu, uint32_t instruction) {
+    // CPU source register index is in 'rt' field
+    uint32_t cpu_r = instr_t(instruction);
+    // COP0 destination register index is in 'rd' field
+    uint32_t cop_r = instr_d(instruction);
+
+    // Get the value from the CPU source register.
+    uint32_t value = cpu_reg(cpu, cpu_r);
+
+    // Write to the specified COP0 register.
+    switch (cop_r) {
+        case 12: // Register 12: SR (Status Register)
+            cpu->sr = value;
+            printf("Executed MTC0: SR = R%u (0x%08x)\n", cpu_r, value);
+            break;
+        // Add cases for other COP0 registers like CAUSE (13), EPC (14), BDA, BPC etc. later
+        // Guide §2.35 suggests ignoring writes of 0 to breakpoint registers initially.
+        case 3: // BPC
+        case 5: // BDA
+        case 6: // ??? (Seems unused)
+        case 7: // DCIC
+        case 9: // BDAM
+        case 11: // BPCM
+             if (value == 0) {
+                 printf("Executed MTC0: COP0 Reg %u = R%u (0x%08x) - Ignored Zero Write\n", cop_r, cpu_r, value);
+             } else {
+                 fprintf(stderr, "Warning: Write to unhandled COP0 Reg %u with non-zero value 0x%08x\n", cop_r, value);
+                 // For now, we just warn. A real implementation might store these.
+             }
+             break;
+        case 13: // CAUSE - Read-only except for specific bits, handle later
+             fprintf(stderr, "Warning: Write to COP0 CAUSE Register ignored (Reg 13 = 0x%08x)\n", value);
+             break;
+        default:
+            fprintf(stderr, "Error: Write to unhandled COP0 Register %u\n", cop_r);
+            // We could panic here, or just ignore. Let's ignore for now.
+            // exit(1);
+             printf("Executed MTC0: COP0 Reg %u = R%u (0x%08x) - Unhandled\n", cop_r, cpu_r, value);
+            break;
+    }
+}
+
+// Dispatcher for COP0 instructions (Opcode 0x10)
+// Based on Section 2.28 [cite: 381]
+void op_cop0(Cpu* cpu, uint32_t instruction) {
+    // COP0 uses the 'rs' field to differentiate between operations like MTC0, MFC0, RFE etc.
+    // The guide calls this `cop_opcode()`. Let's use `instr_s()`.
+    uint32_t cop_opcode = instr_s(instruction);
+
+    switch (cop_opcode) {
+        case 0b00100: // Value 4: MTC0 (Move To Coprocessor 0)
+            op_mtc0(cpu, instruction);
+            break;
+        // Add cases for MFC0 (0b00000), RFE (sub-case of 0b10000) later
+        default:
+             fprintf(stderr, "Unhandled COP0 instruction: PC=0x%08x, Inst=0x%08x, CopOpcode=0x%02x\n",
+                    cpu->pc, instruction, cop_opcode);
+            exit(1);
+    }
+}
+
+
 // Add implementations for ORI, SW, SLL, ADDIU etc. here...
 
 
@@ -103,17 +292,35 @@ void decode_and_execute(Cpu* cpu, uint32_t instruction) {
     uint32_t opcode = instr_function(instruction);
 
     // Debug print showing the instruction being decoded and its primary opcode.
-    printf("Decoding instruction: 0x%08x (Opcode: 0x%02x)\n", instruction, opcode);
+    //printf("Decoding instruction: 0x%08x (Opcode: 0x%02x)\n", instruction, opcode);
 
     // Use a switch statement to handle different primary opcodes.
     switch(opcode) {
+        // --- J-Type Instructions ---
+        case 0b000010: // 0x2: J      <-- ADD THIS CASE
+            op_j(cpu, instruction);
+            break;
+            //I:TYPE
+        case 0b001001: // 0x9: ADDIU  <-- ADD THIS CASE
+            op_addiu(cpu, instruction);
+            break;
+
         // --- I-Type Instructions (and others identified by primary opcode) ---
         case 0b001111: // Opcode 0xF: LUI (Load Upper Immediate) [cite: 178]
             op_lui(cpu, instruction); // Call the LUI implementation function.
             break;
         case 0b001101: // 0xD: ORI <-- ADD THIS CASE
             op_ori(cpu, instruction);
-            break;    
+            break;
+        // --- Load/Store Instructions ---
+        case 0b101011: // 0x2B: SW <-- ADD THIS CASE
+            op_sw(cpu, instruction);
+            break;        
+        // --- Coprocessor 0 Instructions ---
+        case 0b010000: // 0x10: COP0 <-- ADD THIS CASE
+            op_cop0(cpu, instruction);
+            break;
+        // Add cases for COP1(Exception), COP2(GTE), COP3(Exception) later
 
         // --- R-Type Instructions (identified by primary opcode 0x00) ---
         case 0b000000: // Opcode 0x00: These instructions use the subfunction field (bits 5-0). [cite: 287]
@@ -122,22 +329,29 @@ void decode_and_execute(Cpu* cpu, uint32_t instruction) {
                 uint32_t subfunc = instr_subfunction(instruction);
                 // Inner switch statement based on the subfunction code.
                 switch(subfunc) {
-                    // case 0b000000: // Subfunction 0x00: SLL (Shift Left Logical) [cite: 288]
-                    //    op_sll(cpu, instruction); // Call SLL implementation (to be added)
-                    //    break;
+                     case 0b000000: // Subfunction 0x00: SLL (Shift Left Logical) [cite: 288]
+                        op_sll(cpu, instruction); // Call SLL implementation (to be added)
+                        break;
+                    case 0b100101: //0x25: OR instruction
+                        op_or(cpu,instruction);
+                        break;    
                     // Add cases for JR (0x8), OR (0x25), ADDU (0x21), etc. here
-                    default: // Handle any unknown/unimplemented R-type instructions.
-                        fprintf(stderr, "Unhandled R-type instruction: Subfunction 0x%02x\n", subfunc);
-                        exit(1); // Stop emulation on unhandled instruction for debugging.
+                    default:
+                         fprintf(stderr, "Unhandled R-type instruction: PC=0x%08x, Inst=0x%08x, Subfunction=0x%02x\n",
+                                cpu->pc, // PC holds delay slot PC here
+                                instruction, subfunc);
+                        exit(1);
                 }
             }
             break; // End of case 0b000000
 
         // Add cases for ORI (0xD), ADDIU (0x9), J (0x2), SW (0x2B), LW (0x23), COP0 (0x10) etc. here
 
-        default: // Handle any unknown/unimplemented primary opcodes.
-            fprintf(stderr, "Unhandled instruction: 0x%08x (Opcode 0x%02x)\n", instruction, opcode);
-            exit(1); // Stop emulation for debugging.
+        default:
+             fprintf(stderr, "Unhandled instruction: PC=0x%08x, Inst=0x%08x, Opcode=0x%02x\n",
+                    cpu->pc, // PC holds delay slot PC here
+                    instruction, opcode);
+            exit(1);
     }
 }
 
@@ -149,6 +363,7 @@ void cpu_init(Cpu* cpu, Interconnect* inter) {
     // Set the Program Counter to the BIOS entry point. [cite: 79, 81]
     cpu->pc = 0xbfc00000;
     // Store the pointer to the interconnect module for memory access. [cite: 165]
+    cpu->next_pc = cpu ->pc +4;
     cpu->inter = inter;
 
     // Initialize all General Purpose Registers (GPRs).
@@ -159,31 +374,42 @@ void cpu_init(Cpu* cpu, Interconnect* inter) {
     // GPR $zero (index 0) is hardwired to the value 0. [cite: 204, 221]
     cpu->regs[0] = 0;
 
+    //Init COPROCESSOR 0 REgisters
+    cpu->sr = 0; // Status Register - Initial value unknown, guide uses 0 [cite: 386]
+    // The first MTC0 will set it anyway.
+
+    printf("CPU Initialized. PC = 0x%08x, Next PC = 0x%08x, SR=0x%08x, GPRs initialized.\n",
+            cpu->pc, cpu->next_pc, cpu->sr);    
+
     // Print confirmation message.
-    printf("CPU Initialized. PC = 0x%08x, GPRs initialized.\n", cpu->pc);
+    printf("CPU Initialized. PC = 0x%08x, Next PC = 0x%08x, GPRs initialized.\n", cpu->pc, cpu->next_pc);
 }
 
-// --- Basic Execution Cycle ---
-// Simulates one cycle of the CPU: fetch, increment PC, decode & execute.
-// Based on Guide Section 2.4 CPU cycle description [cite: 63]
-// NOTE: This simple version will be updated later to handle branch delay slots correctly (Guide §2.23, §2.71)
+// --- Execution Cycle with Branch Delay Slot Handling ---
+// Refactored based on Guide §2.23 / §2.71 concepts
 void cpu_run_next_instruction(Cpu* cpu) {
-    // Store the address of the instruction we are about to fetch.
-    uint32_t current_pc = cpu->pc;
+    // 1. Get the address of the instruction to execute *now*.
+    uint32_t current_instruction_pc = cpu->pc;
 
-    // 1. Fetch the 32-bit instruction from memory at the current PC address. [cite: 63]
-    //    This uses the interconnect, which currently accesses the BIOS.
-    uint32_t instruction = cpu_load32(cpu, current_pc);
+    // 2. Fetch the instruction at that address.
+    uint32_t instruction = cpu_load32(cpu, current_instruction_pc);
 
-    // 2. Increment the Program Counter to point to the *next* instruction. [cite: 63]
-    //    PlayStation instructions are always 4 bytes long. [cite: 60]
-    //    Standard C unsigned integer addition handles wrapping correctly (e.g., 0xfffffffc + 4 = 0x00000000). [cite: 66]
-    cpu->pc = current_pc + 4;
+    // 3. Prepare for the *next* cycle: Update pc to what next_pc currently points to.
+    //    This ensures that the instruction fetched *next* cycle is the one determined
+    //    by the *previous* cycle (or the jump/branch in *this* cycle).
+    cpu->pc = cpu->next_pc;
 
-    // 3. Decode the fetched instruction and perform the corresponding action. [cite: 64]
+    // 4. Set the default next_pc for the *next* cycle (sequential execution).
+    //    If the current instruction IS NOT a branch/jump, this will be the PC for
+    //    the cycle after the next one.
+    //    If the current instruction IS a branch/jump, it will overwrite next_pc later
+    //    in decode_and_execute.
+    cpu->next_pc = cpu->pc + 4;
+
+    // 5. Decode and execute the instruction we fetched in step 2.
+    //    If this instruction is a jump or branch, it will modify cpu->next_pc.
     decode_and_execute(cpu, instruction);
 
     // Safety net: Ensure R0 ($zero) remains 0 after any instruction execution.
-    // This is usually handled by cpu_set_reg, but added here for extra safety.
     cpu->regs[0] = 0;
 }

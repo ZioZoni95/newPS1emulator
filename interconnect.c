@@ -69,38 +69,83 @@ uint32_t interconnect_load32(Interconnect* inter, uint32_t address) {
     return 0;
 }
 
-// Handles 32-bit memory stores from the CPU.
-// 'address' is the virtual address, 'value' is the data to write.
+// --- Define Memory Control Region ---
+// Based on Guide Section 2.16.2 [cite: 258]
+#define MEM_CONTROL_START 0x1f801000
+// Guide §2.16.2 refers to registers at 0x1f801000, 0x1f801004, and implies others up to offset 36 (0x24) might exist.
+// The range 0x1f801000 to 0x1f801023 covers offsets 0 to 35 (inclusive), total 36 bytes.
+#define MEM_CONTROL_SIZE  36
+#define MEM_CONTROL_END   (MEM_CONTROL_START + MEM_CONTROL_SIZE - 1)
+
+// Specific addresses within MEM_CONTROL that the guide mentions handling
+#define EXPANSION_1_BASE_ADDR 0x1f801000 // Guide §2.16.2 [cite: 258, 261]
+#define EXPANSION_2_BASE_ADDR 0x1f801004 // Guide §2.16.2 [cite: 258, 262]
+
+// Memory store function for 32 bits
 void interconnect_store32(Interconnect* inter, uint32_t address, uint32_t value) {
-    // Check for 32-bit alignment. [cite: 247]
+    // Check alignment
      if (address % 4 != 0) {
         fprintf(stderr, "Unaligned store32 address: 0x%08x\n", address);
-        // TODO: Trigger Address Error Store exception (Guide §2.78) [cite: 989]
-        return; // Placeholder return
+        // TODO: Trigger Address Error Store exception
+        return;
     }
 
-    // Convert virtual address to physical address.
+    // Note: For KSEG2 addresses like CACHE_CONTROL, mask_region should pass them through unchanged.
+    // We'll check the physical_addr which will be the same as the original address in this case.
     uint32_t physical_addr = mask_region(address);
 
     // --- Route the write to the correct component ---
 
-    // Check if the address falls within the BIOS range. BIOS is Read-Only Memory. [cite: 245]
+    // 1. Check BIOS range (Read-Only)
     if (physical_addr >= BIOS_START && physical_addr <= BIOS_END) {
-        // Print a warning/error, but ignore the write.
         fprintf(stderr, "Write attempt to BIOS ROM at address: 0x%08x = 0x%08x (Mapped from 0x%08x)\n",
                 physical_addr, value, address);
-        return; // Do nothing.
+        return; // Ignore write
     }
 
-    // --- Add RAM Range Check Here ---
+    // 2. Check Memory Control range (Guide §2.16.2)
+    if (physical_addr >= MEM_CONTROL_START && physical_addr <= MEM_CONTROL_END) {
+        uint32_t offset = physical_addr - MEM_CONTROL_START;
+        printf("~ Write to MEM_CONTROL region: Offset 0x%x = 0x%08x\n", offset, value);
+        switch (physical_addr) {
+            case EXPANSION_1_BASE_ADDR: // Check Expansion 1 Base
+                if (value != 0x1f000000) { fprintf(stderr, "Warning: Bad Expansion 1 base address write: 0x%08x\n", value); }
+                else { printf("  (Expansion 1 Base Address set correctly)\n"); }
+                break;
+            case EXPANSION_2_BASE_ADDR: // Check Expansion 2 Base
+                 if (value != 0x1f802000) { fprintf(stderr, "Warning: Bad Expansion 2 base address write: 0x%08x\n", value); }
+                 else { printf("  (Expansion 2 Base Address set correctly)\n"); }
+                break;
+            default: // Ignore other MEM_CONTROL writes
+                printf("  (Ignoring write to other MEM_CONTROL register at offset 0x%x)\n", offset);
+                break;
+        }
+        return; // Handled (or ignored) Memory Control write
+    }
+
+    // 3. Check RAM_SIZE register write (Guide §2.21)
+    if (physical_addr == RAM_SIZE_ADDR) {
+        printf("~ Write to RAM_SIZE register (0x%08x): Value 0x%08x (Ignoring)\n",
+               physical_addr, value);
+        return; // Explicitly ignore the write
+    }
+
+    // 4. Check CACHE_CONTROL register write (Guide §2.26) <-- ADD THIS BLOCK
+    if (physical_addr == CACHE_CONTROL_ADDR) {
+        // The guide suggests ignoring writes to this register for now as cache is not implemented.
+        printf("~ Write to CACHE_CONTROL register (0x%08x): Value 0x%08x (Ignoring)\n",
+               physical_addr, value);
+        return; // Explicitly ignore the write
+    }
+
+    // 5. Check RAM Range (To be added)
     // if (physical_addr >= RAM_START && physical_addr <= RAM_END) { ... ram_store32 ... return; }
 
-    // --- Add Hardware Register / Scratchpad / Expansion Checks Here ---
-    // Example for Memory Control write handling (Guide §2.16.2) [cite: 260]
-    // if (physical_addr >= MEM_CONTROL_START && ...) { handle_mem_control_write(...); return; }
+    // 6. Check Hardware Register Ranges (SPU, GPU, DMA, Timers, etc.) (To be added)
+    // ...
 
-    // If the address doesn't map to any known component, print an error.
+
+    // --- Fallback for Unhandled Writes ---
     fprintf(stderr, "Unhandled physical memory write at address: 0x%08x = 0x%08x (Mapped from 0x%08x)\n",
             physical_addr, value, address);
-    // For now, we just ignore writes to unknown addresses.
 }

@@ -13,10 +13,10 @@ typedef struct {
     Interconnect* inter;    // Pointer to the interconnect: How the CPU accesses memory (BIOS, RAM etc.). [cite: 165]
 
     // --- Future State Variables (Placeholders based on later Guide sections) ---
-    // uint32_t next_pc;   // Needed for branch delay slot emulation (Guide §2.71 / §2.23)
+    uint32_t next_pc;   // Needed for branch delay slot emulation (Guide §2.71 / §2.23)
     // uint32_t current_pc;// Needed for precise exception EPC (Guide §2.71)
     // uint32_t hi, lo;    // HI/LO registers for multiplication/division results (Guide §2.12, §2.62) [cite: 211]
-    // uint32_t sr, cause, epc; // Coprocessor 0 registers for status, exceptions (Guide §2.28, §2.71) [cite: 386, 850]
+    uint32_t sr;// cause, epc; // Coprocessor 0 registers for status, exceptions (Guide §2.28, §2.71) [cite: 386, 850]
     // Add load delay slot state (e.g., pending load target/value) (Guide §2.32) [cite: 445]
 
 } Cpu;
@@ -91,11 +91,19 @@ uint32_t cpu_reg(Cpu* cpu, uint32_t index);
 // Based on Guide Section 2.13 set_reg example [cite: 223]
 void cpu_set_reg(Cpu* cpu, uint32_t index, uint32_t value);
 
+// Memory Access via CPU (delegates to Interconnect)
+void cpu_store32(Cpu* cpu, uint32_t address, uint32_t value);
+
 // Specific Instruction Implementation functions (prototypes)
-// LUI - Load Upper Immediate (Guide §2.14) [cite: 227]
 void op_lui(Cpu* cpu, uint32_t instruction);
 void op_ori(Cpu* cpu, uint32_t instruction); 
-
+void op_sw(Cpu* cpu, uint32_t instruction);
+void op_sll(Cpu* cpu, uint32_t instruction);  
+void op_addiu(Cpu* cpu, uint32_t instruction); 
+void op_j(Cpu* cpu, uint32_t instruction);  
+void op_or(Cpu* cpu, uint32_t instruction);      
+void op_cop0(Cpu* cpu, uint32_t instruction);  // <-- ADD: COP0 dispatcher
+void op_mtc0(Cpu* cpu, uint32_t instruction);  // <-- ADD: MTC0 handler
 
 // Add prototypes for op_ori, op_sw, etc. here as they are implemented
 
