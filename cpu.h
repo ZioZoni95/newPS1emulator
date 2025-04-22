@@ -107,6 +107,10 @@ void cpu_store32(Cpu* cpu, uint32_t address, uint32_t value);
 // Branch Helper
 void cpu_branch(Cpu* cpu, uint32_t offset_se);
 
+// Memory Access via CPU (delegates to Interconnect)
+void cpu_store16(Cpu* cpu, uint32_t address, uint16_t value); // <-- ADD THIS
+
+
 // Specific Instruction Implementation functions (prototypes)
 void op_lui(Cpu* cpu, uint32_t instruction);
 void op_ori(Cpu* cpu, uint32_t instruction); 
@@ -122,7 +126,10 @@ void op_addi(Cpu* cpu, uint32_t instruction);
 void op_lw(Cpu* cpu, uint32_t instruction);     // <-- ADD THIS LINE
 void op_sltu(Cpu* cpu, uint32_t instruction);    // <-- ADD THIS LINE
 void op_addu(Cpu* cpu, uint32_t instruction);    // <-- ADD THIS LINE
+void op_sh(Cpu* cpu, uint32_t instruction);     // <-- ADD THIS LINE
+void op_jal(Cpu* cpu, uint32_t instruction);     // <-- ADD THIS LINE
 
+// Memory Access via CPU (delegates to Interconnect)
 
 // Add prototypes for op_ori, op_sw, etc. here as they are implemented
 

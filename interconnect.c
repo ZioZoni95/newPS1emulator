@@ -149,3 +149,73 @@ void interconnect_store32(Interconnect* inter, uint32_t address, uint32_t value)
     fprintf(stderr, "Unhandled physical memory write at address: 0x%08x = 0x%08x (Mapped from 0x%08x)\n",
             physical_addr, value, address);
 }
+
+// Memory store function for 16 bits (Halfword)
+// Based on Section 2.39
+void interconnect_store16(Interconnect* inter, uint32_t address, uint16_t value) {
+    // Check alignment (must be multiple of 2)
+     if (address % 2 != 0) {
+        fprintf(stderr, "Unaligned store16 address: 0x%08x\n", address);
+        // TODO: Trigger Address Error Store exception
+        return;
+    }
+
+    uint32_t physical_addr = mask_region(address);
+
+    // --- Route the write to the correct component ---
+
+    // Check BIOS range (Read-Only)
+    if (physical_addr >= BIOS_START && physical_addr <= BIOS_END) {
+        fprintf(stderr, "Write attempt to BIOS ROM at address: 0x%08x = 0x%04x (16-bit)\n",
+                physical_addr, value);
+        return; // Ignore write
+    }
+
+    // Check Memory Control range
+    // Note: Most hardware registers expect 32-bit writes. Need to verify
+    // if any support 16-bit writes specifically. For now, treat as unhandled/log.
+    if (physical_addr >= MEM_CONTROL_START && physical_addr <= MEM_CONTROL_END) {
+         uint32_t offset = physical_addr - MEM_CONTROL_START;
+         printf("~ Write16 to MEM_CONTROL region: Offset 0x%x = 0x%04x (Ignoring)\n", offset, value);
+         // Generally ignore 16-bit writes here unless a specific register needs it.
+         return;
+    }
+
+    // Check RAM_SIZE register address
+    if (physical_addr == RAM_SIZE_ADDR) {
+        printf("~ Write16 to RAM_SIZE register (0x%08x): Value 0x%04x (Ignoring)\n",
+               physical_addr, value);
+        return; // Explicitly ignore the write
+    }
+
+    // Check CACHE_CONTROL register address
+    if (physical_addr == CACHE_CONTROL_ADDR) {
+        printf("~ Write16 to CACHE_CONTROL register (0x%08x): Value 0x%04x (Ignoring)\n",
+               physical_addr, value);
+        return; // Explicitly ignore the write
+    }
+
+    // Check SPU register range (Example - Guide §2.40 mentions writes here)
+    // #define SPU_START 0x1f801c00
+    // #define SPU_END   0x1f801e7f // Approximate end
+    // if (physical_addr >= SPU_START && physical_addr <= SPU_END) {
+    //      printf("~ Write16 to SPU region: Address 0x%08x = 0x%04x (Not Implemented)\n", physical_addr, value);
+    //      // TODO: Forward to SPU module's write16 function
+    //      return;
+    // }
+
+
+    // --- Add RAM Range Check Here ---
+    // if (physical_addr >= RAM_START && physical_addr <= RAM_END) {
+    //    uint32_t offset = physical_addr - RAM_START;
+    //    ram_store16(inter->ram, offset, value); // Call RAM write function
+    //    // ram_store16 should handle little-endian byte order:
+    //    // ram_buffer[offset] = value & 0xFF;
+    //    // ram_buffer[offset+1] = (value >> 8) & 0xFF;
+    //    return;
+    // }
+
+    // --- Fallback for Unhandled Writes ---
+    fprintf(stderr, "Unhandled physical memory write16 at address: 0x%08x = 0x%04x (Mapped from 0x%08x)\n",
+            physical_addr, value, address);
+}

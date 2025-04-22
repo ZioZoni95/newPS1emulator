@@ -54,6 +54,8 @@ uint32_t interconnect_load32(Interconnect* inter, uint32_t address);
 // Writes a 32-bit word to the specified memory address via the Interconnect.
 void interconnect_store32(Interconnect* inter, uint32_t address, uint32_t value);
 
+void interconnect_store16(Interconnect* inter, uint32_t address, uint16_t value); // <-- ADD THIS
+
 // Add declarations for interconnect_load16, load8, store16, store8 later
 
 // Helper function to map CPU virtual addresses (KUSEG/KSEG0/KSEG1) to physical addresses.

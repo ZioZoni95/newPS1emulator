@@ -17,6 +17,11 @@ void cpu_store32(Cpu* cpu, uint32_t address, uint32_t value) {
     interconnect_store32(cpu->inter, address, value);
 }
 
+// NEW: Delegates 16-bit memory store to the interconnect.
+void cpu_store16(Cpu* cpu, uint32_t address, uint16_t value) {
+    interconnect_store16(cpu->inter, address, value);
+}
+
 
 // --- GPR Accessors ---
 // Reads the value from a specified General Purpose Register (GPR).
@@ -125,7 +130,6 @@ void op_ori(Cpu* cpu, uint32_t instruction) {
 }
 
 
-
 // SLL: Shift Left Logical (Opcode 0x00, Subfunction 0x00)
 // Shifts register 'rt' left by 'shamt' bits, storing the result in 'rd'.
 // Zeroes are shifted in from the right.
@@ -154,7 +158,6 @@ void op_sll(Cpu* cpu, uint32_t instruction) {
         printf("Executed SLL: R%u = R%u << %u => 0x%08x\n", rd, rt, shamt, result);
     }
 }
-
 
 void op_addiu(Cpu* cpu, uint32_t instruction) {
     // Extract the 16-bit immediate and sign-extend it to 32 bits. [cite: 301]
@@ -453,6 +456,91 @@ void op_sltu(Cpu* cpu, uint32_t instruction) {
     printf("Executed SLTU: R%u = (R%u < R%u) ? 1 : 0 => %u\n", rd, rs, rt, result);
 }
 
+// ADDU: Add Unsigned (Opcode 0x00, Subfunction 0x21)
+// Adds registers 'rs' and 'rt' as unsigned integers. Stores result in 'rd'.
+// Does *not* trap on overflow (result wraps).
+// Based on Section 2.37
+void op_addu(Cpu* cpu, uint32_t instruction) {
+    // Extract the destination register index (rd).
+    uint32_t rd = instr_d(instruction);
+    // Extract the first source register index (rs).
+    uint32_t rs = instr_s(instruction);
+    // Extract the second source register index (rt).
+    uint32_t rt = instr_t(instruction);
+
+    // Read the values from the source registers.
+    uint32_t rs_value = cpu_reg(cpu, rs);
+    uint32_t rt_value = cpu_reg(cpu, rt);
+
+    // Perform unsigned addition. Standard C unsigned arithmetic handles wrapping.
+    uint32_t result = rs_value + rt_value;
+
+    // Write the result back to the destination register rd.
+    cpu_set_reg(cpu, rd, result);
+
+    // Debug print.
+    printf("Executed ADDU: R%u = R%u + R%u => 0x%08x\n", rd, rs, rt, result);
+}
+
+// SH: Store Halfword (Opcode 0b101001 = 0x29)
+// Stores the lower 16 bits from register 'rt' into memory.
+// Address is calculated as register 'rs' + sign-extended 16-bit immediate offset.
+// Requires 16-bit alignment.
+// Based on Section 2.39
+void op_sh(Cpu* cpu, uint32_t instruction) {
+    // Check cache isolation bit in Status Register (SR).
+    if ((cpu->sr & 0x10000) != 0) {
+        printf("Executed SH: Ignored (Cache Isolated, SR=0x%08x)\n", cpu->sr);
+        return; // Skip the memory store
+    }
+
+    // Extract the 16-bit immediate and sign-extend it to 32 bits.
+    uint32_t offset = instr_imm_se(instruction);
+    // Extract the target register (rt) which holds the value to store.
+    uint32_t rt = instr_t(instruction);
+    // Extract the base register (rs) which holds the base address.
+    uint32_t rs = instr_s(instruction);
+
+    // Read the base address from register rs.
+    uint32_t base_addr = cpu_reg(cpu, rs);
+    // Read the full 32-bit value from register rt.
+    uint32_t value_to_store = cpu_reg(cpu, rt);
+
+    // Calculate the effective memory address.
+    uint32_t address = base_addr + offset;
+
+    // Call the CPU's store16 function (which delegates to the interconnect).
+    // Alignment checks (multiple of 2) happen in interconnect_store16.
+    // We only pass the lower 16 bits of the value.
+    cpu_store16(cpu, address, (uint16_t)value_to_store);
+
+    // Debug print.
+    printf("Executed SH: M[R%u + %d (0x%08x)] = R%u (lower 16b = 0x%04x) @ address 0x%08x\n",
+           rs, (int16_t)offset, offset, rt, (uint16_t)value_to_store, address);
+}
+
+// JAL: Jump And Link (Opcode 0b000011 = 0x3)
+// Jumps to target address like J, but also stores the return address
+// (PC of instruction AFTER delay slot) in register $ra ($31).
+// Based on Section 2.41
+void op_jal(Cpu* cpu, uint32_t instruction) {
+    // 1. Link: Save the return address in $ra ($31)
+    // The return address is the address of the instruction AFTER the delay slot.
+    // Since cpu->pc currently points to the delay slot instruction,
+    // the return address is cpu->pc + 4.
+    uint32_t return_addr = cpu->pc + 4;
+    cpu_set_reg(cpu, 31, return_addr); // $ra is register 31
+
+    // 2. Jump: Calculate target address and update next_pc (same logic as J)
+    uint32_t target_imm = instr_imm_jump(instruction);
+    // Upper 4 bits from delay slot PC (which is current cpu->pc)
+    uint32_t target_address = (cpu->pc & 0xF0000000) | (target_imm << 2);
+    cpu->next_pc = target_address;
+
+    // Debug print.
+    printf("Executed JAL: R31 = 0x%08x, Branch delay slot. Next PC set to 0x%08x\n",
+           return_addr, target_address);
+}
 
 
 // Add implementations for ORI, SW, SLL, ADDIU etc. here...
@@ -474,6 +562,9 @@ void decode_and_execute(Cpu* cpu, uint32_t instruction) {
         case 0b000010: // 0x2: J      <-- ADD THIS CASE
             op_j(cpu, instruction);
             break;
+        case 0b000011: // 0x3: JAL <-- ADD THIS CASE
+            op_jal(cpu, instruction);
+            break;    
 
         // --- Branch Instructions ---
         case 0b000101: // 0x5: BNE  <-- ADD THIS CASE
@@ -493,6 +584,9 @@ void decode_and_execute(Cpu* cpu, uint32_t instruction) {
              break;
         case 0b101011: // 0x2B: SW <-- ADD THIS CASE
             op_sw(cpu, instruction);
+            break;    
+        case 0b101001: // 0x29: SH <-- ADD THIS CASE
+            op_sh(cpu, instruction);
             break;        
         // --- Coprocessor 0 Instructions ---
         case 0b010000: // 0x10: COP0 <-- ADD THIS CASE
@@ -515,9 +609,14 @@ void decode_and_execute(Cpu* cpu, uint32_t instruction) {
                 uint32_t subfunc = instr_subfunction(instruction);
                 // Inner switch statement based on the subfunction code.
                 switch(subfunc) {
-                     case 0b000000: // Subfunction 0x00: SLL (Shift Left Logical) [cite: 288]
+                    case 0b000000: // Subfunction 0x00: SLL (Shift Left Logical) [cite: 288]
                         op_sll(cpu, instruction); // Call SLL implementation (to be added)
                         break;
+                    
+                    case 0b100001: //0x21: ADDU
+                        op_addu(cpu,instruction);
+                        break;
+
                     case 0b100101: //0x25: OR instruction
                         op_or(cpu,instruction);
                         break; 
