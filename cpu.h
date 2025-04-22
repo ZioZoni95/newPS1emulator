@@ -4,20 +4,30 @@
 #include <stdint.h>       // Standard header for fixed-width integer types like uint32_t
 #include "interconnect.h" // We need the definition of the Interconnect struct
 
+// Define Register Index type for clarity (can just be uint32_t if preferred)
+typedef uint32_t RegisterIndex;
+#define REG_ZERO ((RegisterIndex)0) // Represents $zero
+
 // --- CPU Structure Definition ---
 // Defines the state of the MIPS R3000 CPU we are emulating.
 // Based on Guide Section 2.4, 2.13, 2.12
 typedef struct {
     uint32_t pc;            // Program Counter register: Holds the address of the *next* instruction to fetch. [cite: 55, 56]
     uint32_t regs[32];      // General Purpose Registers (GPRs): 32 registers used for general computations. [cite: 196, 218]
+    uint32_t out_regs[32];  // GPRs written by the *current* instruction (Output set)
+    uint32_t next_pc;   // Needed for branch delay slot emulation (Guide §2.71 / §2.23)
+
+    // --- Pending Load Delay Slot --- [Guide §2.32 / §2.33]
+    RegisterIndex load_reg_idx; // Target register index for the pending load.
+    uint32_t load_value;        // Value to be loaded into the target register.
+
+    
     Interconnect* inter;    // Pointer to the interconnect: How the CPU accesses memory (BIOS, RAM etc.). [cite: 165]
 
     // --- Future State Variables (Placeholders based on later Guide sections) ---
-    uint32_t next_pc;   // Needed for branch delay slot emulation (Guide §2.71 / §2.23)
     // uint32_t current_pc;// Needed for precise exception EPC (Guide §2.71)
     // uint32_t hi, lo;    // HI/LO registers for multiplication/division results (Guide §2.12, §2.62) [cite: 211]
     uint32_t sr;// cause, epc; // Coprocessor 0 registers for status, exceptions (Guide §2.28, §2.71) [cite: 386, 850]
-    // Add load delay slot state (e.g., pending load target/value) (Guide §2.32) [cite: 445]
 
 } Cpu;
 
@@ -94,6 +104,9 @@ void cpu_set_reg(Cpu* cpu, uint32_t index, uint32_t value);
 // Memory Access via CPU (delegates to Interconnect)
 void cpu_store32(Cpu* cpu, uint32_t address, uint32_t value);
 
+// Branch Helper
+void cpu_branch(Cpu* cpu, uint32_t offset_se);
+
 // Specific Instruction Implementation functions (prototypes)
 void op_lui(Cpu* cpu, uint32_t instruction);
 void op_ori(Cpu* cpu, uint32_t instruction); 
@@ -104,6 +117,12 @@ void op_j(Cpu* cpu, uint32_t instruction);
 void op_or(Cpu* cpu, uint32_t instruction);      
 void op_cop0(Cpu* cpu, uint32_t instruction);  // <-- ADD: COP0 dispatcher
 void op_mtc0(Cpu* cpu, uint32_t instruction);  // <-- ADD: MTC0 handler
+void op_bne(Cpu* cpu, uint32_t instruction);
+void op_addi(Cpu* cpu, uint32_t instruction);
+void op_lw(Cpu* cpu, uint32_t instruction);     // <-- ADD THIS LINE
+void op_sltu(Cpu* cpu, uint32_t instruction);    // <-- ADD THIS LINE
+void op_addu(Cpu* cpu, uint32_t instruction);    // <-- ADD THIS LINE
+
 
 // Add prototypes for op_ori, op_sw, etc. here as they are implemented
 
