@@ -22,8 +22,12 @@
 #define RAM_SIZE_ADDR 0x1f801060 // Specific address for the RAM Size register <-- THIS WAS ADDED
 
 #define CACHE_CONTROL_ADDR 0xfffe0130 // Address of Cache Control register (Guide §2.26) <-- ADD THIS
-
-
+// Expansion Region 2 (for SB/SH ignore check)
+#define EXPANSION_2_START 0x1f802000
+#define EXPANSION_2_END   0x1f80207f // Example end, exact range might vary
+// SPU Register Range (for SH ignore check)
+#define SPU_START 0x1f801c00
+#define SPU_END   0x1f801e7f // Approximate end based on common docs
 // --- Add other physical memory map definitions here as needed ---
 // #define RAM_START 0x00000000
 // #define RAM_SIZE  (2 * 1024 * 1024)
@@ -55,6 +59,7 @@ uint32_t interconnect_load32(Interconnect* inter, uint32_t address);
 void interconnect_store32(Interconnect* inter, uint32_t address, uint32_t value);
 
 void interconnect_store16(Interconnect* inter, uint32_t address, uint16_t value); // <-- ADD THIS
+void interconnect_store8(Interconnect* inter, uint32_t address, uint8_t value);
 
 // Add declarations for interconnect_load16, load8, store16, store8 later
 

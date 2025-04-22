@@ -128,7 +128,8 @@ void op_sltu(Cpu* cpu, uint32_t instruction);    // <-- ADD THIS LINE
 void op_addu(Cpu* cpu, uint32_t instruction);    // <-- ADD THIS LINE
 void op_sh(Cpu* cpu, uint32_t instruction);     // <-- ADD THIS LINE
 void op_jal(Cpu* cpu, uint32_t instruction);     // <-- ADD THIS LINE
-
+void op_andi(Cpu* cpu, uint32_t instruction);
+void op_sb(Cpu* cpu, uint32_t instruction);
 // Memory Access via CPU (delegates to Interconnect)
 
 // Add prototypes for op_ori, op_sw, etc. here as they are implemented

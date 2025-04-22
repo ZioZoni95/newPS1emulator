@@ -219,3 +219,37 @@ void interconnect_store16(Interconnect* inter, uint32_t address, uint16_t value)
     fprintf(stderr, "Unhandled physical memory write16 at address: 0x%08x = 0x%04x (Mapped from 0x%08x)\n",
             physical_addr, value, address);
 }
+// --- Store 8-bit ---
+void interconnect_store8(Interconnect* inter, uint32_t address, uint8_t value) {
+    // No alignment check needed
+    uint32_t physical_addr = mask_region(address);
+
+    if (physical_addr >= BIOS_START && physical_addr <= BIOS_END) {
+        fprintf(stderr, "Write8 attempt to BIOS ROM at address: 0x%08x = 0x%02x\n", physical_addr, value);
+        return;
+    }
+    // Check Expansion 2 region (Guide §2.44)
+    if (physical_addr >= EXPANSION_2_START && physical_addr <= EXPANSION_2_END) {
+         printf("~ Write8 to Expansion 2 region: Address 0x%08x = 0x%02x (Ignoring)\n", physical_addr, value);
+         return;
+    }
+    if (physical_addr >= MEM_CONTROL_START && physical_addr <= MEM_CONTROL_END) {
+         uint32_t offset = physical_addr - MEM_CONTROL_START;
+         printf("~ Write8 to MEM_CONTROL region: Offset 0x%x = 0x%02x (Ignoring)\n", offset, value);
+         return;
+    }
+    if (physical_addr == RAM_SIZE_ADDR) {
+        printf("~ Write8 to RAM_SIZE register (0x%08x): Value 0x%02x (Ignoring)\n", physical_addr, value);
+        return;
+    }
+    if (physical_addr == CACHE_CONTROL_ADDR) {
+        printf("~ Write8 to CACHE_CONTROL register (0x%08x): Value 0x%02x (Ignoring)\n", physical_addr, value);
+        return;
+    }
+
+    // TODO: Add RAM store8
+    // TODO: Add HW register store8 (e.g., SPU, maybe others?)
+
+    fprintf(stderr, "Unhandled physical memory write8 at address: 0x%08x = 0x%02x (Mapped from 0x%08x)\n",
+            physical_addr, value, address);
+}
