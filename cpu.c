@@ -1242,6 +1242,29 @@ void op_slt(Cpu* cpu, uint32_t instruction) {
            rd, rs, rs_value, rt, rt_value, result);
 }
 
+// NOR: Bitwise Not OR (Opcode 0x00, Subfunction 0x27)
+// Calculates ~(rs | rt) and stores the result in rd.
+// Based on Section 2.85
+void op_nor(Cpu* cpu, uint32_t instruction) {
+    // Extract register indices
+    uint32_t rd = instr_d(instruction);
+    uint32_t rs = instr_s(instruction);
+    uint32_t rt = instr_t(instruction);
+
+    // Read values from source registers
+    uint32_t rs_value = cpu_reg(cpu, rs);
+    uint32_t rt_value = cpu_reg(cpu, rt);
+
+    // Perform bitwise OR, then bitwise NOT
+    uint32_t or_result = rs_value | rt_value;
+    uint32_t result = ~or_result; // Bitwise NOT
+
+    // Write result to destination register
+    cpu_set_reg(cpu, rd, result);
+
+    // Debug print
+    printf("Executed NOR: R%u = ~(R%u | R%u) => 0x%08x\n", rd, rs, rt, result);
+}
 
 // SYSCALL: System Call (Opcode 0x00, Subfunction 0x0c)
 // Triggers a System Call Exception (Cause Code 0x8).
@@ -1364,7 +1387,9 @@ void decode_and_execute(Cpu* cpu, uint32_t instruction) {
                     case 0b001100: // Subfunction 0x0c: SYSCALL <-- Add this case
                         op_syscall(cpu, instruction);
                         break;     
-
+                    case 0b100111: // Subfunction 0x27: NOR <-- Add this case
+                        op_nor(cpu, instruction);
+                        break;
 
                     case 0b001000: // Subfunction 0x08: JR  <-- Aggiungi questo case
                         op_jr(cpu, instruction);
