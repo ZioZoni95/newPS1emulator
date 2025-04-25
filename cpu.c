@@ -307,6 +307,9 @@ void op_cop0(Cpu* cpu, uint32_t instruction) {
         case 0b00100: // Value 4: MTC0 (Move To Coprocessor 0)
             op_mtc0(cpu, instruction);
             break;
+        case 0b00000: // Value 0: MFC0 (Move From Coprocessor 0) <-- Add this case
+            op_mfc0(cpu, instruction);
+            break;    
         // Add cases for MFC0 (0b00000), RFE (sub-case of 0b10000) later
         default:
              fprintf(stderr, "Unhandled COP0 instruction: PC=0x%08x, Inst=0x%08x, CopOpcode=0x%02x\n",
@@ -339,6 +342,32 @@ void op_bne(Cpu* cpu, uint32_t instruction) {
         // If equal, do nothing (next_pc remains pc+4 from run_next_instruction).
         printf("Executed BNE: R%u (0x%x) == R%u (0x%x), Branch not taken.\n",
                rs, rs_value, rt, rt_value);
+    }
+}
+
+// BGTZ: Branch if Greater Than Zero (Opcode 0b000111 = 0x7)
+// Compares register 'rs' (signed) against 0. If rs > 0, branches.
+// Based on Section 2.54
+void op_bgtz(Cpu* cpu, uint32_t instruction) {
+    // Extract the 16-bit immediate and sign-extend it.
+    uint32_t imm_se = instr_imm_se(instruction);
+    // Extract the source register index (rs) to compare against zero.
+    uint32_t rs = instr_s(instruction);
+    // Note: 'rt' field is not used for the comparison in BGTZ.
+
+    // Read the value from the source register and treat as signed.
+    int32_t rs_value = (int32_t)cpu_reg(cpu, rs);
+
+    // Perform the signed comparison against zero.
+    if (rs_value > 0) {
+        // If greater than zero, call the branch helper to update next_pc.
+        cpu_branch(cpu, imm_se);
+        printf("Executed BGTZ: R%u (%d) > 0, Branch taken. Next PC will be 0x%08x\n",
+               rs, rs_value, cpu->next_pc);
+    } else {
+        // If zero or less, do nothing (next_pc remains pc+4).
+        printf("Executed BGTZ: R%u (%d) <= 0, Branch not taken.\n",
+               rs, rs_value);
     }
 }
 
@@ -459,6 +488,114 @@ void op_sltu(Cpu* cpu, uint32_t instruction) {
 
     // Debug print.
     printf("Executed SLTU: R%u = (R%u < R%u) ? 1 : 0 => %u\n", rd, rs, rt, result);
+}
+
+// AND: Bitwise AND (Opcode 0x00, Subfunction 0x24)
+// Performs a bitwise AND between registers 'rs' and 'rt'. Stores result in 'rd'.
+// Based on Section 2.51
+void op_and(Cpu* cpu, uint32_t instruction) {
+    // Extract register indices
+    uint32_t rd = instr_d(instruction);
+    uint32_t rs = instr_s(instruction);
+    uint32_t rt = instr_t(instruction);
+
+    // Read values from source registers
+    uint32_t rs_value = cpu_reg(cpu, rs);
+    uint32_t rt_value = cpu_reg(cpu, rt);
+
+    // Perform bitwise AND
+    uint32_t result = rs_value & rt_value;
+
+    // Write result to destination register
+    cpu_set_reg(cpu, rd, result);
+
+    // Debug print
+    printf("Executed AND: R%u = R%u & R%u => 0x%08x\n", rd, rs, rt, result);
+}
+
+// MFC0: Move From Coprocessor 0 (Opcode 0x10, Specific MFC0 op 0b00000 in rs field)
+// Moves value from Coprocessor 0 register 'rd' to CPU register 'rt'.
+// Has a load delay slot.
+// Based on Section 2.50 [cite: 595]
+void op_mfc0(Cpu* cpu, uint32_t instruction) {
+    // CPU destination register index is in 'rt' field
+    uint32_t cpu_r_dest = instr_t(instruction);
+    // COP0 source register index is in 'rd' field
+    uint32_t cop_r_src = instr_d(instruction);
+
+    uint32_t value_read;
+
+    // Read from the specified COP0 register.
+    switch (cop_r_src) {
+        case 12: // Register 12: SR (Status Register)
+            value_read = cpu->sr;
+            printf("Executed MFC0: R%u <- SR (0x%08x) (Delayed)\n", cpu_r_dest, value_read);
+            break;
+        case 13: // Register 13: CAUSE Register (Added for exceptions) [cite: 850]
+            // value_read = cpu->cause; // Uncomment when cause is added to Cpu struct
+            value_read = 0; // Placeholder if cause not yet in struct
+            printf("Executed MFC0: R%u <- CAUSE (0x%08x) (Delayed)\n", cpu_r_dest, value_read);
+             fprintf(stderr, "Warning: Reading from uninitialized CAUSE register (COP0 Reg 13)\n");
+            break;
+        case 14: // Register 14: EPC Register (Added for exceptions) [cite: 850]
+            // value_read = cpu->epc; // Uncomment when epc is added to Cpu struct
+            value_read = 0; // Placeholder if epc not yet in struct
+            printf("Executed MFC0: R%u <- EPC (0x%08x) (Delayed)\n", cpu_r_dest, value_read);
+             fprintf(stderr, "Warning: Reading from uninitialized EPC register (COP0 Reg 14)\n");
+            break;
+        // Add cases for other readable COP0 registers if needed later
+        default:
+            fprintf(stderr, "Error: Read from unhandled COP0 Register %u\n", cop_r_src);
+            value_read = 0; // Return 0 for unhandled reads for now
+            // exit(1); // Optionally exit on error
+            break;
+    }
+
+    // Schedule the value to be loaded into the CPU register after the delay slot. [cite: 603]
+    cpu->load_reg_idx = cpu_r_dest;
+    cpu->load_value = value_read;
+}
+
+// ADD: Add (Signed, with Overflow Check) (Opcode 0x00, Subfunction 0x20)
+// Adds registers 'rs' and 'rt' as signed integers. Stores result in 'rd'.
+// Triggers an exception on signed overflow.
+// Based on Section 2.52
+void op_add(Cpu* cpu, uint32_t instruction) {
+    // Extract register indices
+    uint32_t rd = instr_d(instruction);
+    uint32_t rs = instr_s(instruction);
+    uint32_t rt = instr_t(instruction);
+
+    // Read values from source registers, cast to signed
+    int32_t rs_value = (int32_t)cpu_reg(cpu, rs);
+    int32_t rt_value = (int32_t)cpu_reg(cpu, rt);
+
+    // Perform signed addition and check for overflow
+    // Using GCC/Clang built-in for overflow check
+    int32_t result;
+    if (__builtin_add_overflow(rs_value, rt_value, &result)) {
+        // Overflow occurred!
+        fprintf(stderr, "ADD Signed Overflow: %d + %d\n", rs_value, rt_value);
+        // TODO: Trigger Integer Overflow Exception (Guide §2.77)
+        // cpu_exception(cpu, EXCEPTION_OVERFLOW);
+        exit(1); // Stop emulator for now
+    } else {
+        // No overflow, write the result (cast back to uint32_t for storage).
+        cpu_set_reg(cpu, rd, (uint32_t)result);
+        printf("Executed ADD: R%u = R%u + R%u => 0x%08x\n", rd, rs, rt, (uint32_t)result);
+    }
+
+    /* // Manual overflow check alternative
+    int64_t wide_result = (int64_t)rs_value + (int64_t)rt_value;
+    if (wide_result > INT32_MAX || wide_result < INT32_MIN) {
+         fprintf(stderr, "ADD Signed Overflow: %d + %d\n", rs_value, rt_value);
+         // TODO: Trigger Integer Overflow Exception
+         exit(1);
+    } else {
+         cpu_set_reg(cpu, rd, (uint32_t)wide_result);
+         printf("Executed ADD: R%u = R%u + R%u => 0x%08x\n", rd, rs, rt, (uint32_t)wide_result);
+    }
+    */
 }
 
 // ADDU: Add Unsigned (Opcode 0x00, Subfunction 0x21)
@@ -723,6 +860,10 @@ void decode_and_execute(Cpu* cpu, uint32_t instruction) {
         case 0b000100: // 0x4: BEQ  <-- Add this case
             op_beq(cpu, instruction);
             break;    
+        case 0b000111: // Opcode 0x7: BGTZ <-- Add this case
+            op_bgtz(cpu, instruction);
+            break; 
+            
         // --- I-Type Instructions (and others identified by primary opcode) ---
         case 0b001111: // Opcode 0xF: LUI (Load Upper Immediate) [cite: 178]
             op_lui(cpu, instruction); // Call the LUI implementation function.
@@ -782,7 +923,12 @@ void decode_and_execute(Cpu* cpu, uint32_t instruction) {
                     case 0b100001: //0x21: ADDU
                         op_addu(cpu,instruction);
                         break;
-
+                    case 0b100000: // Subfunction 0x20: ADD <-- Add this case
+                        op_add(cpu, instruction);
+                        break;    
+                    case 0b100100: // Subfunction 0x24: AND <-- Add this case
+                        op_and(cpu, instruction);
+                        break;    
                     case 0b100101: //0x25: OR instruction
                         op_or(cpu,instruction);
                         break; 

@@ -133,6 +133,10 @@ void op_sb(Cpu* cpu, uint32_t instruction);
 void op_jr(Cpu* cpu, uint32_t instruction);
 void op_lb(Cpu* cpu, uint32_t instruction); // <-- Add this line
 void op_beq(Cpu* cpu, uint32_t instruction); // <-- Add this line
+void op_mfc0(Cpu* cpu, uint32_t instruction); // <-- Add this line
+void op_and(Cpu* cpu, uint32_t instruction); // <-- Add this line
+void op_add(Cpu* cpu, uint32_t instruction); // <-- Add this line
+void op_bgtz(Cpu* cpu, uint32_t instruction); // <-- Add this line
 
 // Memory Access via CPU (delegates to Interconnect)
 
