@@ -22,6 +22,11 @@ void cpu_store16(Cpu* cpu, uint32_t address, uint16_t value) {
     interconnect_store16(cpu->inter, address, value);
 }
 
+// NEW: Delegates 8-bit memory store to the interconnect.
+void cpu_store8(Cpu* cpu, uint32_t address, uint8_t value) {
+    interconnect_store8(cpu->inter, address, value);
+}
+
 
 // --- GPR Accessors ---
 // Reads the value from a specified General Purpose Register (GPR).
@@ -542,6 +547,67 @@ void op_jal(Cpu* cpu, uint32_t instruction) {
            return_addr, target_address);
 }
 
+// ANDI: Bitwise AND Immediate (Opcode 0b001100 = 0xC)
+// Performs a bitwise AND between register 'rs' and the zero-extended immediate value.
+// Stores the result in register 'rt'.
+// Based on Section 2.42
+void op_andi(Cpu* cpu, uint32_t instruction) {
+    // Extract the 16-bit immediate value (zero-extended by the helper).
+    uint32_t imm_zero_ext = instr_imm(instruction);
+    // Extract the target register index (rt) - this is the destination.
+    uint32_t rt = instr_t(instruction);
+    // Extract the source register index (rs).
+    uint32_t rs = instr_s(instruction);
+
+    // Read the value from the source register rs.
+    uint32_t rs_value = cpu_reg(cpu, rs);
+
+    // Perform the bitwise AND operation.
+    uint32_t result = rs_value & imm_zero_ext;
+
+    // Write the result back to the target register rt.
+    cpu_set_reg(cpu, rt, result);
+
+    // Debug print. (Example from guide: andi $4, $4, 0xff)
+    printf("Executed ANDI: R%u = R%u & 0x%04x => 0x%08x\n", rt, rs, imm_zero_ext, result);
+}
+
+// SB: Store Byte (Opcode 0b101000 = 0x28)
+// Stores the lowest 8 bits from register 'rt' into memory.
+// Address is calculated as register 'rs' + sign-extended 16-bit immediate offset.
+// No alignment requirement.
+// Based on Section 2.43
+void op_sb(Cpu* cpu, uint32_t instruction) {
+    // Check cache isolation bit in Status Register (SR).
+    if ((cpu->sr & 0x10000) != 0) {
+        printf("Executed SB: Ignored (Cache Isolated, SR=0x%08x)\n", cpu->sr);
+        return; // Skip the memory store
+    }
+
+    // Extract the 16-bit immediate and sign-extend it to 32 bits.
+    uint32_t offset = instr_imm_se(instruction);
+    // Extract the target register (rt) which holds the value to store.
+    uint32_t rt = instr_t(instruction);
+    // Extract the base register (rs) which holds the base address.
+    uint32_t rs = instr_s(instruction);
+
+    // Read the base address from register rs.
+    uint32_t base_addr = cpu_reg(cpu, rs);
+    // Read the full 32-bit value from register rt.
+    uint32_t value_to_store = cpu_reg(cpu, rt);
+
+    // Calculate the effective memory address.
+    uint32_t address = base_addr + offset;
+
+    // Call the CPU's store8 function (which delegates to the interconnect).
+    // We only pass the lower 8 bits of the value.
+    cpu_store8(cpu, address, (uint8_t)value_to_store);
+
+    // Debug print.
+    printf("Executed SB: M[R%u + %d (0x%08x)] = R%u (lower 8b = 0x%02x) @ address 0x%08x\n",
+           rs, (int16_t)offset, offset, rt, (uint8_t)value_to_store, address);
+}
+
 
 // Add implementations for ORI, SW, SLL, ADDIU etc. here...
 
@@ -578,6 +644,9 @@ void decode_and_execute(Cpu* cpu, uint32_t instruction) {
         case 0b001101: // 0xD: ORI <-- ADD THIS CASE
             op_ori(cpu, instruction);
             break;
+        case 0b001100: // 0xC: ANDI <-- ADD THIS CASE
+            op_andi(cpu, instruction);
+            break;    
         // --- Load/Store Instructions ---
         case 0b100011: // 0x23: LW  <-- ADD THIS CASE
              op_lw(cpu, instruction);
@@ -587,7 +656,10 @@ void decode_and_execute(Cpu* cpu, uint32_t instruction) {
             break;    
         case 0b101001: // 0x29: SH <-- ADD THIS CASE
             op_sh(cpu, instruction);
-            break;        
+            break;
+        case 0b101000: // 0x28: SB <-- ADD THIS CASE
+            op_sb(cpu, instruction);
+            break;             
         // --- Coprocessor 0 Instructions ---
         case 0b010000: // 0x10: COP0 <-- ADD THIS CASE
             op_cop0(cpu, instruction);
