@@ -1,6 +1,7 @@
 #include "interconnect.h" // Include the corresponding header file
 #include <stdio.h>        // For printing error messages (fprintf, stderr)
 #include <stddef.h>       // For size_t
+#include "ram.h"          // <-- Include ram.h for ram_* functions
 
 // --- Memory Region Masking ---
 // Array of masks used to convert KUSEG/KSEG0/KSEG1 addresses to physical addresses.
@@ -28,9 +29,9 @@ uint32_t mask_region(uint32_t addr) {
 
 
 // Initialize the Interconnect structure by storing pointers to system components.
-void interconnect_init(Interconnect* inter, Bios* bios /*, Ram* ram, ... */) {
+void interconnect_init(Interconnect* inter, Bios* bios, Ram* ram /*, ... */) { // <-- Added Ram* param
     inter->bios = bios; // Store the pointer to the BIOS structure.
-    // inter->ram = ram; // Store pointer to RAM when added.
+    inter->ram = ram;   // <-- Store pointer to RAM
     printf("Interconnect Initialized.\n");
 }
 
@@ -57,29 +58,32 @@ uint32_t interconnect_load32(Interconnect* inter, uint32_t address) {
         return bios_load32(inter->bios, offset);
     }
 
-    // --- Add RAM Range Check Here ---
-    // if (physical_addr >= RAM_START && physical_addr <= RAM_END) { ... }
+    // --- Add RAM Range Check ---
+    if (physical_addr >= RAM_START && physical_addr <= RAM_END) {
+        // Calculate offset within RAM
+        uint32_t offset = physical_addr - RAM_START;
+        return ram_load32(inter->ram, offset); // <-- Call RAM load function
+    }
 
     // --- Add Hardware Register / Scratchpad / Expansion Checks Here ---
+    // Example: Check for Interrupt Mask read (return 0 for now)
+    if (physical_addr == 0x1f801074) { // IRQ_MASK address
+        printf("~ Read from IRQ_MASK (0x1f801074): Returning 0 (Not Implemented)\n");
+        return 0;
+    }
+     if (physical_addr == 0x1f801070) { // IRQ_STATUS address
+        printf("~ Read from IRQ_STATUS (0x1f801070): Returning 0 (Not Implemented)\n");
+        return 0;
+    }
+    // TODO: Add more specific HW register reads as needed (GPUSTAT, DMA, Timers etc.)
 
     // If the address doesn't map to any known component, print an error.
-    fprintf(stderr, "Unhandled physical memory read at address: 0x%08x (Mapped from 0x%08x)\n",
+    fprintf(stderr, "Unhandled physical memory read32 at address: 0x%08x (Mapped from 0x%08x)\n",
             physical_addr, address);
     // A real system might return garbage or cause a bus error. Return 0 for now.
     return 0;
 }
 
-// --- Define Memory Control Region ---
-// Based on Guide Section 2.16.2 [cite: 258]
-#define MEM_CONTROL_START 0x1f801000
-// Guide §2.16.2 refers to registers at 0x1f801000, 0x1f801004, and implies others up to offset 36 (0x24) might exist.
-// The range 0x1f801000 to 0x1f801023 covers offsets 0 to 35 (inclusive), total 36 bytes.
-#define MEM_CONTROL_SIZE  36
-#define MEM_CONTROL_END   (MEM_CONTROL_START + MEM_CONTROL_SIZE - 1)
-
-// Specific addresses within MEM_CONTROL that the guide mentions handling
-#define EXPANSION_1_BASE_ADDR 0x1f801000 // Guide §2.16.2 [cite: 258, 261]
-#define EXPANSION_2_BASE_ADDR 0x1f801004 // Guide §2.16.2 [cite: 258, 262]
 
 // Memory store function for 32 bits
 void interconnect_store32(Interconnect* inter, uint32_t address, uint32_t value) {
@@ -106,18 +110,18 @@ void interconnect_store32(Interconnect* inter, uint32_t address, uint32_t value)
     // 2. Check Memory Control range (Guide §2.16.2)
     if (physical_addr >= MEM_CONTROL_START && physical_addr <= MEM_CONTROL_END) {
         uint32_t offset = physical_addr - MEM_CONTROL_START;
-        printf("~ Write to MEM_CONTROL region: Offset 0x%x = 0x%08x\n", offset, value);
+       // printf("~ Write to MEM_CONTROL region: Offset 0x%x = 0x%08x\n", offset, value); // Less verbose
         switch (physical_addr) {
             case EXPANSION_1_BASE_ADDR: // Check Expansion 1 Base
                 if (value != 0x1f000000) { fprintf(stderr, "Warning: Bad Expansion 1 base address write: 0x%08x\n", value); }
-                else { printf("  (Expansion 1 Base Address set correctly)\n"); }
+                // else { printf("  (Expansion 1 Base Address set correctly)\n"); } // Too verbose
                 break;
             case EXPANSION_2_BASE_ADDR: // Check Expansion 2 Base
                  if (value != 0x1f802000) { fprintf(stderr, "Warning: Bad Expansion 2 base address write: 0x%08x\n", value); }
-                 else { printf("  (Expansion 2 Base Address set correctly)\n"); }
+                 // else { printf("  (Expansion 2 Base Address set correctly)\n"); } // Too verbose
                 break;
             default: // Ignore other MEM_CONTROL writes
-                printf("  (Ignoring write to other MEM_CONTROL register at offset 0x%x)\n", offset);
+                // printf("  (Ignoring write to other MEM_CONTROL register at offset 0x%x)\n", offset); // Too verbose
                 break;
         }
         return; // Handled (or ignored) Memory Control write
@@ -125,28 +129,39 @@ void interconnect_store32(Interconnect* inter, uint32_t address, uint32_t value)
 
     // 3. Check RAM_SIZE register write (Guide §2.21)
     if (physical_addr == RAM_SIZE_ADDR) {
-        printf("~ Write to RAM_SIZE register (0x%08x): Value 0x%08x (Ignoring)\n",
-               physical_addr, value);
+        // printf("~ Write to RAM_SIZE register (0x%08x): Value 0x%08x (Ignoring)\n", // Too verbose
+        //        physical_addr, value);
         return; // Explicitly ignore the write
     }
 
-    // 4. Check CACHE_CONTROL register write (Guide §2.26) <-- ADD THIS BLOCK
+    // 4. Check CACHE_CONTROL register write (Guide §2.26)
     if (physical_addr == CACHE_CONTROL_ADDR) {
         // The guide suggests ignoring writes to this register for now as cache is not implemented.
-        printf("~ Write to CACHE_CONTROL register (0x%08x): Value 0x%08x (Ignoring)\n",
-               physical_addr, value);
+        // printf("~ Write to CACHE_CONTROL register (0x%08x): Value 0x%08x (Ignoring)\n", // Too verbose
+        //       physical_addr, value);
         return; // Explicitly ignore the write
     }
 
-    // 5. Check RAM Range (To be added)
-    // if (physical_addr >= RAM_START && physical_addr <= RAM_END) { ... ram_store32 ... return; }
+    // --- Add RAM Range Check ---
+    if (physical_addr >= RAM_START && physical_addr <= RAM_END) {
+        uint32_t offset = physical_addr - RAM_START;
+        ram_store32(inter->ram, offset, value); // <-- Call RAM store function
+        return;
+    }
 
-    // 6. Check Hardware Register Ranges (SPU, GPU, DMA, Timers, etc.) (To be added)
-    // ...
+    // 6. Check Hardware Register Ranges (SPU, GPU, DMA, Timers, etc.)
+    // Example: Interrupt Control Registers (Guide §2.53)
+     if (physical_addr >= 0x1f801070 && physical_addr <= 0x1f801077) { // IRQ_STATUS and IRQ_MASK
+        uint32_t offset = physical_addr - 0x1f801070;
+        printf("~ Write32 to IRQ_CONTROL region: Offset 0x%x = 0x%08x (Ignoring)\n", offset, value);
+        // TODO: Implement IRQ handling later
+        return;
+     }
+    // TODO: Add more specific HW register writes as needed (GPU, DMA, Timers etc.)
 
 
     // --- Fallback for Unhandled Writes ---
-    fprintf(stderr, "Unhandled physical memory write at address: 0x%08x = 0x%08x (Mapped from 0x%08x)\n",
+    fprintf(stderr, "Unhandled physical memory write32 at address: 0x%08x = 0x%08x (Mapped from 0x%08x)\n",
             physical_addr, value, address);
 }
 
@@ -166,59 +181,67 @@ void interconnect_store16(Interconnect* inter, uint32_t address, uint16_t value)
 
     // Check BIOS range (Read-Only)
     if (physical_addr >= BIOS_START && physical_addr <= BIOS_END) {
-        fprintf(stderr, "Write attempt to BIOS ROM at address: 0x%08x = 0x%04x (16-bit)\n",
+        fprintf(stderr, "Write16 attempt to BIOS ROM at address: 0x%08x = 0x%04x\n",
                 physical_addr, value);
         return; // Ignore write
     }
 
     // Check Memory Control range
-    // Note: Most hardware registers expect 32-bit writes. Need to verify
-    // if any support 16-bit writes specifically. For now, treat as unhandled/log.
     if (physical_addr >= MEM_CONTROL_START && physical_addr <= MEM_CONTROL_END) {
          uint32_t offset = physical_addr - MEM_CONTROL_START;
-         printf("~ Write16 to MEM_CONTROL region: Offset 0x%x = 0x%04x (Ignoring)\n", offset, value);
-         // Generally ignore 16-bit writes here unless a specific register needs it.
+         // printf("~ Write16 to MEM_CONTROL region: Offset 0x%x = 0x%04x (Ignoring)\n", offset, value); // Too verbose
          return;
     }
 
     // Check RAM_SIZE register address
     if (physical_addr == RAM_SIZE_ADDR) {
-        printf("~ Write16 to RAM_SIZE register (0x%08x): Value 0x%04x (Ignoring)\n",
-               physical_addr, value);
+       // printf("~ Write16 to RAM_SIZE register (0x%08x): Value 0x%04x (Ignoring)\n", // Too verbose
+       //        physical_addr, value);
         return; // Explicitly ignore the write
     }
 
     // Check CACHE_CONTROL register address
     if (physical_addr == CACHE_CONTROL_ADDR) {
-        printf("~ Write16 to CACHE_CONTROL register (0x%08x): Value 0x%04x (Ignoring)\n",
-               physical_addr, value);
+        // printf("~ Write16 to CACHE_CONTROL register (0x%08x): Value 0x%04x (Ignoring)\n", // Too verbose
+        //        physical_addr, value);
         return; // Explicitly ignore the write
     }
 
-    // Check SPU register range (Example - Guide §2.40 mentions writes here)
-    // #define SPU_START 0x1f801c00
-    // #define SPU_END   0x1f801e7f // Approximate end
-    // if (physical_addr >= SPU_START && physical_addr <= SPU_END) {
-    //      printf("~ Write16 to SPU region: Address 0x%08x = 0x%04x (Not Implemented)\n", physical_addr, value);
-    //      // TODO: Forward to SPU module's write16 function
-    //      return;
-    // }
+    // Check SPU register range (Guide §2.40)
+    if (physical_addr >= SPU_START && physical_addr <= SPU_END) {
+         printf("~ Write16 to SPU region: Address 0x%08x = 0x%04x (Ignoring)\n", physical_addr, value);
+         // TODO: Forward to SPU module's write16 function
+         return;
+    }
 
+    // --- Add RAM Range Check ---
+    if (physical_addr >= RAM_START && physical_addr <= RAM_END) {
+        uint32_t offset = physical_addr - RAM_START;
+        ram_store16(inter->ram, offset, value); // <-- Call RAM store function
+        return;
+    }
 
-    // --- Add RAM Range Check Here ---
-    // if (physical_addr >= RAM_START && physical_addr <= RAM_END) {
-    //    uint32_t offset = physical_addr - RAM_START;
-    //    ram_store16(inter->ram, offset, value); // Call RAM write function
-    //    // ram_store16 should handle little-endian byte order:
-    //    // ram_buffer[offset] = value & 0xFF;
-    //    // ram_buffer[offset+1] = (value >> 8) & 0xFF;
-    //    return;
-    // }
+    // Check Interrupt Control Registers (Guide §2.90)
+     if (physical_addr >= 0x1f801070 && physical_addr <= 0x1f801077) { // IRQ_STATUS and IRQ_MASK
+        uint32_t offset = physical_addr - 0x1f801070;
+        printf("~ Write16 to IRQ_CONTROL region: Offset 0x%x = 0x%04x (Ignoring)\n", offset, value);
+        // TODO: Implement IRQ handling later
+        return;
+     }
+    // Check Timer Registers (Guide §2.70, §2.91) - Approximate Range
+     if (physical_addr >= 0x1f801100 && physical_addr <= 0x1f80112F) {
+         uint32_t offset = physical_addr - 0x1f801100;
+         printf("~ Write16 to TIMERS region: Offset 0x%x = 0x%04x (Ignoring)\n", offset, value);
+         // TODO: Implement Timer handling later
+         return;
+     }
+    // TODO: Add other HW regs like GPU, DMA if they support 16-bit writes
 
     // --- Fallback for Unhandled Writes ---
     fprintf(stderr, "Unhandled physical memory write16 at address: 0x%08x = 0x%04x (Mapped from 0x%08x)\n",
             physical_addr, value, address);
 }
+
 // --- Store 8-bit ---
 void interconnect_store8(Interconnect* inter, uint32_t address, uint8_t value) {
     // No alignment check needed
@@ -230,26 +253,117 @@ void interconnect_store8(Interconnect* inter, uint32_t address, uint8_t value) {
     }
     // Check Expansion 2 region (Guide §2.44)
     if (physical_addr >= EXPANSION_2_START && physical_addr <= EXPANSION_2_END) {
-         printf("~ Write8 to Expansion 2 region: Address 0x%08x = 0x%02x (Ignoring)\n", physical_addr, value);
+         // printf("~ Write8 to Expansion 2 region: Address 0x%08x = 0x%02x (Ignoring)\n", physical_addr, value); // Too verbose
          return;
     }
     if (physical_addr >= MEM_CONTROL_START && physical_addr <= MEM_CONTROL_END) {
          uint32_t offset = physical_addr - MEM_CONTROL_START;
-         printf("~ Write8 to MEM_CONTROL region: Offset 0x%x = 0x%02x (Ignoring)\n", offset, value);
+        // printf("~ Write8 to MEM_CONTROL region: Offset 0x%x = 0x%02x (Ignoring)\n", offset, value); // Too verbose
          return;
     }
     if (physical_addr == RAM_SIZE_ADDR) {
-        printf("~ Write8 to RAM_SIZE register (0x%08x): Value 0x%02x (Ignoring)\n", physical_addr, value);
+        // printf("~ Write8 to RAM_SIZE register (0x%08x): Value 0x%02x (Ignoring)\n", physical_addr, value); // Too verbose
         return;
     }
     if (physical_addr == CACHE_CONTROL_ADDR) {
-        printf("~ Write8 to CACHE_CONTROL register (0x%08x): Value 0x%02x (Ignoring)\n", physical_addr, value);
+       // printf("~ Write8 to CACHE_CONTROL register (0x%08x): Value 0x%02x (Ignoring)\n", physical_addr, value); // Too verbose
         return;
     }
 
-    // TODO: Add RAM store8
+    // --- Add RAM Range Check ---
+    if (physical_addr >= RAM_START && physical_addr <= RAM_END) {
+        uint32_t offset = physical_addr - RAM_START;
+        ram_store8(inter->ram, offset, value); // <-- Call RAM store function
+        return;
+    }
+
     // TODO: Add HW register store8 (e.g., SPU, maybe others?)
+    // Check SPU register range
+    if (physical_addr >= SPU_START && physical_addr <= SPU_END) {
+         printf("~ Write8 to SPU region: Address 0x%08x = 0x%02x (Ignoring)\n", physical_addr, value);
+         // TODO: Forward to SPU module's write8 function if needed
+         return;
+    }
 
     fprintf(stderr, "Unhandled physical memory write8 at address: 0x%08x = 0x%02x (Mapped from 0x%08x)\n",
             physical_addr, value, address);
+}
+
+// --- Add Load16/Load8 ---
+
+uint16_t interconnect_load16(Interconnect* inter, uint32_t address) {
+     if (address % 2 != 0) {
+        fprintf(stderr, "Unaligned load16 address: 0x%08x\n", address);
+        // TODO: Trigger Address Error Load exception
+        return 0;
+    }
+    uint32_t physical_addr = mask_region(address);
+
+    // Check RAM
+    if (physical_addr >= RAM_START && physical_addr <= RAM_END) {
+        uint32_t offset = physical_addr - RAM_START;
+        return ram_load16(inter->ram, offset);
+    }
+
+    // Check BIOS
+     if (physical_addr >= BIOS_START && physical_addr <= BIOS_END) {
+        uint32_t offset = physical_addr - BIOS_START;
+        // Implement bios_load16 if needed, or handle differently. Let's return 0 for now.
+        // This assumes 16-bit BIOS reads aren't common initially.
+        fprintf(stderr, "Warning: Unhandled 16-bit read from BIOS at 0x%08x\n", physical_addr);
+        return 0; // Placeholder
+    }
+
+    // Check Interrupt Control Registers (Guide §2.90)
+     if (physical_addr >= 0x1f801070 && physical_addr <= 0x1f801077) { // IRQ_STATUS and IRQ_MASK
+        uint32_t offset = physical_addr - 0x1f801070;
+        printf("~ Read16 from IRQ_CONTROL region: Offset 0x%x (Ignoring, returning 0)\n", offset);
+        // TODO: Implement IRQ handling later
+        return 0;
+     }
+
+    // Check SPU Registers (Needed for LHU in Guide §2.82)
+    if (physical_addr >= SPU_START && physical_addr <= SPU_END) {
+         printf("~ Read16 from SPU region: Address 0x%08x (Ignoring, returning 0)\n", physical_addr);
+         // TODO: Forward to SPU module's read16 function
+         return 0; // Return 0 for now as per §2.82's initial approach
+    }
+
+    // TODO: Add checks for other HW regs if they support 16-bit reads (Timers?)
+
+    fprintf(stderr, "Unhandled physical memory read16 at address: 0x%08x (Mapped from 0x%08x)\n", physical_addr, address);
+    return 0;
+}
+
+uint8_t interconnect_load8(Interconnect* inter, uint32_t address) {
+    uint32_t physical_addr = mask_region(address);
+
+    // Check RAM
+    if (physical_addr >= RAM_START && physical_addr <= RAM_END) {
+        uint32_t offset = physical_addr - RAM_START;
+        return ram_load8(inter->ram, offset);
+    }
+
+    // Check BIOS (Guide §2.46 needs BIOS byte reads)
+     if (physical_addr >= BIOS_START && physical_addr <= BIOS_END) {
+        uint32_t offset = physical_addr - BIOS_START;
+        // Implement bios_load8 - it's just reading a byte
+        if (offset < BIOS_SIZE) {
+             return inter->bios->data[offset];
+        } else {
+             fprintf(stderr, "BIOS Load8 out of bounds: offset 0x%x\n", offset);
+             return 0;
+        }
+    }
+
+    // Check Expansion 1 (Guide §2.48)
+     if (physical_addr >= EXPANSION_1_START && physical_addr <= EXPANSION_1_END) {
+         printf("~ Read8 from Expansion 1 region: Address 0x%08x (Returning 0xFF - No Expansion)\n", physical_addr);
+         return 0xFF; // Return 0xFF as per guide when no expansion is present
+     }
+
+    // TODO: Add checks for other HW regs if they support 8-bit reads
+
+    fprintf(stderr, "Unhandled physical memory read8 at address: 0x%08x (Mapped from 0x%08x)\n", physical_addr, address);
+    return 0; // Default fallback
 }

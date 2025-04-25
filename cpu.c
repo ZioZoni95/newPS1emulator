@@ -608,6 +608,90 @@ void op_sb(Cpu* cpu, uint32_t instruction) {
            rs, (int16_t)offset, offset, rt, (uint8_t)value_to_store, address);
 }
 
+// LB: Load Byte (Signed) (Opcode 0b100000 = 0x20)
+// Loads an 8-bit byte from memory, sign-extends it to 32 bits,
+// and schedules the write to register 'rt' after the delay slot.
+// Address = rs + sign_extended_offset.
+// Based on Section 2.46
+void op_lb(Cpu* cpu, uint32_t instruction) {
+    // Cache isolate check (assuming loads might also be affected, like LW)
+    // Guide doesn't explicitly mention LB for cache isolate, but let's be consistent.
+    if ((cpu->sr & 0x10000) != 0) {
+        printf("Executed LB: Ignored (Cache Isolated, SR=0x%08x)\n", cpu->sr);
+        return;
+    }
+
+    uint32_t offset = instr_imm_se(instruction); // Sign-extended immediate offset
+    uint32_t rt = instr_t(instruction);         // Target register index
+    uint32_t rs = instr_s(instruction);         // Base address register index
+
+    // Read base address from rs
+    uint32_t base_addr = cpu_reg(cpu, rs);
+    // Calculate effective memory address
+    uint32_t address = base_addr + offset;
+
+    // Load the 8-bit byte from memory via interconnect's load8 function
+    // Note: Interconnect's load8 should already exist from previous steps
+    uint8_t byte_loaded = interconnect_load8(cpu->inter, address); // <-- Make sure load8 is implemented in interconnect
+
+    // *** Sign-extend the loaded byte to 32 bits ***
+    // Cast the uint8_t to int8_t, then to int32_t (which performs sign extension),
+    // then cast to uint32_t for storage/scheduling. [cite: 559, 562]
+    uint32_t value_sign_extended = (uint32_t)(int32_t)(int8_t)byte_loaded;
+
+    // Schedule the sign-extended value for the load delay slot
+    cpu->load_reg_idx = rt;
+    cpu->load_value = value_sign_extended;
+
+    printf("Executed LB: R%u <- M[R%u + %d (0x%08x)] = 0x%02x (sign-extended to 0x%08x) @ 0x%08x (Delayed)\n",
+           rt, rs, (int16_t)offset, offset, byte_loaded, value_sign_extended, address);
+}
+
+// JR: Jump Register (Opcode 0x00, Subfunction 0x08)
+// Jumps to the address contained in register 'rs'.
+// Execution continues at the delay slot instruction before jumping.
+// Based on Section 2.45 [cite: 554]
+void op_jr(Cpu* cpu, uint32_t instruction) {
+    // Extract the source register index (rs) which holds the target address.
+    uint32_t rs = instr_s(instruction);
+
+    // Read the target address from the specified register.
+    uint32_t target_address = cpu_reg(cpu, rs);
+
+    // Set the *next* program counter (the one AFTER the delay slot executes).
+    cpu->next_pc = target_address; // [cite: 555] (adattato per next_pc)
+
+    // Debug print. Often used with R31 ($ra) to return from function.
+    printf("Executed JR: Jump to R%u (0x%08x). Branch delay slot. Next PC set to 0x%08x\n",
+           rs, target_address, target_address);
+}
+
+// BEQ: Branch if Equal (Opcode 0b000100 = 0x4)
+// Compares registers 'rs' and 'rt'. If rs == rt, branches to PC + 4 + (offset * 4).
+// Based on Section 2.47
+void op_beq(Cpu* cpu, uint32_t instruction) {
+    // Extract the 16-bit immediate and sign-extend it.
+    uint32_t imm_se = instr_imm_se(instruction);
+    // Extract the source register indices.
+    uint32_t rs = instr_s(instruction);
+    uint32_t rt = instr_t(instruction);
+
+    // Read the values from the source registers.
+    uint32_t rs_value = cpu_reg(cpu, rs);
+    uint32_t rt_value = cpu_reg(cpu, rt);
+
+    // Compare the register values.
+    if (rs_value == rt_value) {
+        // If equal, call the branch helper to update next_pc.
+        cpu_branch(cpu, imm_se);
+        printf("Executed BEQ: R%u (0x%x) == R%u (0x%x), Branch taken. Next PC will be 0x%08x\n",
+               rs, rs_value, rt, rt_value, cpu->next_pc);
+    } else {
+        // If not equal, do nothing (next_pc remains pc+4 from run_next_instruction).
+        printf("Executed BEQ: R%u (0x%x) != R%u (0x%x), Branch not taken.\n",
+               rs, rs_value, rt, rt_value);
+    }
+}
 
 // Add implementations for ORI, SW, SLL, ADDIU etc. here...
 
@@ -636,7 +720,9 @@ void decode_and_execute(Cpu* cpu, uint32_t instruction) {
         case 0b000101: // 0x5: BNE  <-- ADD THIS CASE
             op_bne(cpu, instruction);
             break;
-
+        case 0b000100: // 0x4: BEQ  <-- Add this case
+            op_beq(cpu, instruction);
+            break;    
         // --- I-Type Instructions (and others identified by primary opcode) ---
         case 0b001111: // Opcode 0xF: LUI (Load Upper Immediate) [cite: 178]
             op_lui(cpu, instruction); // Call the LUI implementation function.
@@ -647,9 +733,13 @@ void decode_and_execute(Cpu* cpu, uint32_t instruction) {
         case 0b001100: // 0xC: ANDI <-- ADD THIS CASE
             op_andi(cpu, instruction);
             break;    
+
         // --- Load/Store Instructions ---
         case 0b100011: // 0x23: LW  <-- ADD THIS CASE
              op_lw(cpu, instruction);
+             break;
+        case 0b100000: // Opcode 0x20: LB  <-- Add this case
+             op_lb(cpu, instruction);
              break;
         case 0b101011: // 0x2B: SW <-- ADD THIS CASE
             op_sw(cpu, instruction);
@@ -683,6 +773,10 @@ void decode_and_execute(Cpu* cpu, uint32_t instruction) {
                 switch(subfunc) {
                     case 0b000000: // Subfunction 0x00: SLL (Shift Left Logical) [cite: 288]
                         op_sll(cpu, instruction); // Call SLL implementation (to be added)
+                        break;
+
+                    case 0b001000: // Subfunction 0x08: JR  <-- Aggiungi questo case
+                        op_jr(cpu, instruction);
                         break;
                     
                     case 0b100001: //0x21: ADDU
