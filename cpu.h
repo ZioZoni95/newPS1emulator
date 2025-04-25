@@ -45,7 +45,6 @@ typedef struct {
     // --- Future State Variables (Placeholders based on later Guide sections) ---
     uint32_t current_pc;// Needed for precise exception EPC (Guide §2.71)
     uint32_t hi, lo;    // HI/LO registers for multiplication/division results (Guide §2.12, §2.62) [cite: 211]
-    uint32_t sr;// cause, epc; // Coprocessor 0 registers for status, exceptions (Guide §2.28, §2.71) [cite: 386, 850]
 
 } Cpu;
 

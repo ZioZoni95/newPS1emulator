@@ -1242,30 +1242,6 @@ void op_slt(Cpu* cpu, uint32_t instruction) {
            rd, rs, rs_value, rt, rt_value, result);
 }
 
-// SLT: Set on Less Than (Signed) (Opcode 0x00, Subfunction 0x2a)
-// Compares registers 'rs' and 'rt' (signed).
-// If rs < rt, sets register 'rd' to 1, otherwise sets it to 0.
-// Based on Section 2.68
-void op_slt(Cpu* cpu, uint32_t instruction) {
-    // Extract register indices
-    uint32_t rd = instr_d(instruction);
-    uint32_t rs = instr_s(instruction);
-    uint32_t rt = instr_t(instruction);
-
-    // Read values from source registers and treat as signed
-    int32_t rs_value = (int32_t)cpu_reg(cpu, rs);
-    int32_t rt_value = (int32_t)cpu_reg(cpu, rt);
-
-    // Perform the signed comparison.
-    uint32_t result = (rs_value < rt_value) ? 1 : 0;
-
-    // Write the result (0 or 1) back to the destination register rd.
-    cpu_set_reg(cpu, rd, result);
-
-    // Debug print.
-    printf("Executed SLT: R%u = (R%u (%d) < R%u (%d)) ? 1 : 0 => %u\n",
-           rd, rs, rs_value, rt, rt_value, result);
-}
 
 // SYSCALL: System Call (Opcode 0x00, Subfunction 0x0c)
 // Triggers a System Call Exception (Cause Code 0x8).
