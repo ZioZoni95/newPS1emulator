@@ -8,6 +8,19 @@
 typedef uint32_t RegisterIndex;
 #define REG_ZERO ((RegisterIndex)0) // Represents $zero
 
+// --- Exception Cause Codes ---
+// (Based on MIPS spec / Guide exception sections)
+typedef enum {
+    EXCEPTION_INTERRUPT        = 0x00, // Interrupt
+    EXCEPTION_LOAD_ADDRESS_ERROR = 0x04, // Address error on load
+    EXCEPTION_STORE_ADDRESS_ERROR= 0x05, // Address error on store
+    EXCEPTION_SYSCALL          = 0x08, // System call instruction
+    EXCEPTION_BREAK            = 0x09, // Break instruction
+    EXCEPTION_ILLEGAL_INSTRUCTION= 0x0a, // Reserved/Illegal instruction
+    EXCEPTION_COPROCESSOR_ERROR= 0x0b, // Coprocessor Unusable
+    EXCEPTION_OVERFLOW         = 0x0c  // Arithmetic Overflow (ADD/ADDI/SUB)
+} ExceptionCause;
+
 // --- CPU Structure Definition ---
 // Defines the state of the MIPS R3000 CPU we are emulating.
 // Based on Guide Section 2.4, 2.13, 2.12
@@ -24,9 +37,14 @@ typedef struct {
     
     Interconnect* inter;    // Pointer to the interconnect: How the CPU accesses memory (BIOS, RAM etc.). [cite: 165]
 
+    // --- Coprocessor 0 Registers ---
+    uint32_t sr;            // Status Register (COP0 Reg 12)
+    uint32_t cause;         // Cause Register (COP0 Reg 13) <-- ADD
+    uint32_t epc; 
+
     // --- Future State Variables (Placeholders based on later Guide sections) ---
-    // uint32_t current_pc;// Needed for precise exception EPC (Guide §2.71)
-    // uint32_t hi, lo;    // HI/LO registers for multiplication/division results (Guide §2.12, §2.62) [cite: 211]
+    uint32_t current_pc;// Needed for precise exception EPC (Guide §2.71)
+    uint32_t hi, lo;    // HI/LO registers for multiplication/division results (Guide §2.12, §2.62) [cite: 211]
     uint32_t sr;// cause, epc; // Coprocessor 0 registers for status, exceptions (Guide §2.28, §2.71) [cite: 386, 850]
 
 } Cpu;
@@ -110,6 +128,8 @@ void cpu_branch(Cpu* cpu, uint32_t offset_se);
 // Memory Access via CPU (delegates to Interconnect)
 void cpu_store16(Cpu* cpu, uint32_t address, uint16_t value); // <-- ADD THIS
 
+void cpu_exception(Cpu* cpu, ExceptionCause cause); // <-- Add prototype
+
 
 // Specific Instruction Implementation functions (prototypes)
 void op_lui(Cpu* cpu, uint32_t instruction);
@@ -137,10 +157,24 @@ void op_mfc0(Cpu* cpu, uint32_t instruction); // <-- Add this line
 void op_and(Cpu* cpu, uint32_t instruction); // <-- Add this line
 void op_add(Cpu* cpu, uint32_t instruction); // <-- Add this line
 void op_bgtz(Cpu* cpu, uint32_t instruction); // <-- Add this line
+void op_blez(Cpu* cpu, uint32_t instruction); // <-- Ensure this exists (added as placeholder before)
+void op_lbu(Cpu* cpu, uint32_t instruction); // <-- Add this line
+void op_jalr(Cpu* cpu, uint32_t instruction); // <-- Add this line
+void op_bxx(Cpu* cpu, uint32_t instruction);  // <-- Add this for Opcode 0x01 group (special case)
+void op_slti(Cpu* cpu, uint32_t instruction); // <-- Add this line
+void op_subu(Cpu* cpu, uint32_t instruction); // <-- Add this line
+void op_sra(Cpu* cpu, uint32_t instruction); // <-- Add this line
+void op_div(Cpu* cpu, uint32_t instruction); // <-- Add this line
+void op_divu(Cpu* cpu, uint32_t instruction); // <-- Add this line
+void op_mflo(Cpu* cpu, uint32_t instruction); // <-- Add this line
+void op_srl(Cpu* cpu, uint32_t instruction); // <-- Add this line
+void op_sltiu(Cpu* cpu, uint32_t instruction); // <-- Add this line
+void op_slt(Cpu* cpu, uint32_t instruction); // <-- Add this line
+void op_mfhi(Cpu* cpu, uint32_t instruction); // <-- Add this line
+void op_syscall(Cpu* cpu, uint32_t instruction); // <-- Add this line
 
 // Memory Access via CPU (delegates to Interconnect)
 
-// Add prototypes for op_ori, op_sw, etc. here as they are implemented
 
 
 #endif // CPU_H

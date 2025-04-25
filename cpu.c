@@ -830,6 +830,453 @@ void op_beq(Cpu* cpu, uint32_t instruction) {
     }
 }
 
+// BLEZ: Branch if Less Than or Equal to Zero (Opcode 0b000110 = 0x6)
+// Compares register 'rs' (signed) against 0. If rs <= 0, branches.
+// Based on Section 2.55 [cite: 647]
+void op_blez(Cpu* cpu, uint32_t instruction) {
+    // Extract the 16-bit immediate and sign-extend it.
+    uint32_t imm_se = instr_imm_se(instruction);
+    // Extract the source register index (rs) to compare against zero.
+    uint32_t rs = instr_s(instruction);
+    // Note: 'rt' field is not used for the comparison in BLEZ.
+
+    // Read the value from the source register and treat as signed. [cite: 650]
+    int32_t rs_value = (int32_t)cpu_reg(cpu, rs);
+
+    // Perform the signed comparison against zero. [cite: 651]
+    if (rs_value <= 0) {
+        // If less than or equal to zero, call the branch helper to update next_pc.
+        cpu_branch(cpu, imm_se);
+        printf("Executed BLEZ: R%u (%d) <= 0, Branch taken. Next PC will be 0x%08x\n",
+               rs, rs_value, cpu->next_pc);
+    } else {
+        // If greater than zero, do nothing (next_pc remains pc+4).
+        printf("Executed BLEZ: R%u (%d) > 0, Branch not taken.\n",
+               rs, rs_value);
+    }
+}
+
+// LBU: Load Byte Unsigned (Opcode 0b100100 = 0x24)
+// Loads an 8-bit byte from memory, zero-extends it to 32 bits,
+// and schedules the write to register 'rt' after the delay slot.
+// Address = rs + sign_extended_offset.
+// Based on Section 2.56
+void op_lbu(Cpu* cpu, uint32_t instruction) {
+    // Cache isolate check (consistency with other loads)
+    if ((cpu->sr & 0x10000) != 0) {
+        printf("Executed LBU: Ignored (Cache Isolated, SR=0x%08x)\n", cpu->sr);
+        return;
+    }
+
+    uint32_t offset = instr_imm_se(instruction); // Sign-extended immediate offset
+    uint32_t rt = instr_t(instruction);         // Target register index
+    uint32_t rs = instr_s(instruction);         // Base address register index
+
+    // Read base address from rs
+    uint32_t base_addr = cpu_reg(cpu, rs);
+    // Calculate effective memory address
+    uint32_t address = base_addr + offset;
+
+    // Load the 8-bit byte from memory via interconnect's load8 function
+    uint8_t byte_loaded = interconnect_load8(cpu->inter, address);
+
+    // *** Zero-extend the loaded byte to 32 bits ***
+    // Simply casting uint8_t to uint32_t achieves zero-extension.
+    uint32_t value_zero_extended = (uint32_t)byte_loaded;
+
+    // Schedule the zero-extended value for the load delay slot
+    cpu->load_reg_idx = rt;
+    cpu->load_value = value_zero_extended;
+
+    printf("Executed LBU: R%u <- M[R%u + %d (0x%08x)] = 0x%02x (zero-extended to 0x%08x) @ 0x%08x (Delayed)\n",
+           rt, rs, (int16_t)offset, offset, byte_loaded, value_zero_extended, address);
+}
+
+// JALR: Jump And Link Register (Opcode 0x00, Subfunction 0x09)
+// Jumps to address in register 'rs'. Stores return address (PC + 4) in register 'rd'.
+// Based on Section 2.57
+void op_jalr(Cpu* cpu, uint32_t instruction) {
+    // Register holding the target jump address
+    uint32_t rs = instr_s(instruction);
+    // Register where the return address (PC+4) will be stored
+    uint32_t rd = instr_d(instruction); // Defaults to 31 ($ra) if not specified in asm
+
+    // Read the target jump address from register rs
+    uint32_t target_address = cpu_reg(cpu, rs);
+
+    // Calculate the return address (instruction after the delay slot)
+    // cpu->pc currently points *to* the delay slot instruction.
+    uint32_t return_addr = cpu->pc + 4;
+
+    // Store the return address in register rd
+    cpu_set_reg(cpu, rd, return_addr);
+
+    // Set the *next* program counter (the one AFTER the delay slot executes)
+    // This performs the jump.
+    cpu->next_pc = target_address;
+
+    printf("Executed JALR: R%u = 0x%08x, Jump to R%u (0x%08x). Branch delay slot. Next PC set to 0x%08x\n",
+           rd, return_addr, rs, target_address, target_address);
+}
+
+//SPECIAL INSTRUCTIONS
+// Handles Opcode 0x01: BLTZ, BGEZ, BLTZAL, BGEZAL
+// Differentiates based on bits 16 and 20 within the instruction.
+// Based on Section 2.58
+void op_bxx(Cpu* cpu, uint32_t instruction) {
+    uint32_t imm_se = instr_imm_se(instruction); // Sign-extended offset
+    uint32_t rs = instr_s(instruction);         // Register to compare against zero
+
+    // Determine the specific instruction variant from bits 16 & 20
+    // These bits are within the 'rt' field's usual position
+    int is_bgez = (instruction >> 16) & 1; // 0 for BLTZ, 1 for BGEZ type
+    int is_link = (instruction >> 20) & 1; // 1 for linking (BLTZAL/BGEZAL)
+
+    // Read the value from rs and treat as signed
+    int32_t rs_value = (int32_t)cpu_reg(cpu, rs);
+
+    // Perform the base comparison (less than zero)
+    int test_ltz = (rs_value < 0);
+
+    // Determine the actual condition based on is_bgez
+    // test = test_ltz if BLTZ-type (is_bgez=0)
+    // test = !test_ltz if BGEZ-type (is_bgez=1)
+    // This XOR trick implements the conditional negation:
+    int condition_met = test_ltz ^ is_bgez;
+
+    // Determine instruction name for logging (optional but helpful)
+    const char* name = "UNKNOWN_BXX";
+    if (is_link) {
+        name = is_bgez ? "BGEZAL" : "BLTZAL";
+    } else {
+        name = is_bgez ? "BGEZ" : "BLTZ";
+    }
+
+    // Branch if the condition is met
+    if (condition_met) {
+        // If it's a linking variant, store the return address (PC+4) in $ra ($31)
+        if (is_link) {
+            uint32_t return_addr = cpu->pc + 4;
+            cpu_set_reg(cpu, 31, return_addr); // $ra = 31
+             printf("Executed %s: R%u (%d) condition met, R31 = 0x%08x, Branch taken. Next PC will be 0x%08x\n",
+                   name, rs, rs_value, return_addr, cpu->pc + (imm_se << 2)); // Approx target for logging
+        } else {
+             printf("Executed %s: R%u (%d) condition met, Branch taken. Next PC will be 0x%08x\n",
+                   name, rs, rs_value, cpu->pc + (imm_se << 2)); // Approx target for logging
+        }
+        // Schedule the branch
+        cpu_branch(cpu, imm_se);
+    } else {
+        printf("Executed %s: R%u (%d) condition not met, Branch not taken.\n",
+               name, rs, rs_value);
+    }
+}
+
+// SLTI: Set on Less Than Immediate (Signed) (Opcode 0b001010 = 0xA)
+// Compares register 'rs' (signed) with the sign-extended immediate.
+// If rs < immediate, sets register 'rt' to 1, otherwise sets it to 0.
+// Based on Section 2.59
+void op_slti(Cpu* cpu, uint32_t instruction) {
+    // Extract the 16-bit immediate and sign-extend it.
+    int32_t imm_se = (int32_t)instr_imm_se(instruction); // Immediate is signed
+    // Extract the target register index (rt) - the destination.
+    uint32_t rt = instr_t(instruction);
+    // Extract the source register index (rs) - the value to compare.
+    uint32_t rs = instr_s(instruction);
+
+    // Read the value from the source register rs and treat as signed.
+    int32_t rs_value = (int32_t)cpu_reg(cpu, rs);
+
+    // Perform the signed comparison.
+    uint32_t result = (rs_value < imm_se) ? 1 : 0;
+
+    // Write the result (0 or 1) back to the target register rt.
+    cpu_set_reg(cpu, rt, result);
+
+    // Debug print.
+    printf("Executed SLTI: R%u = (R%u (%d) < %d) ? 1 : 0 => %u\n",
+           rt, rs, rs_value, imm_se, result);
+}
+
+// SUBU: Subtract Unsigned (Opcode 0x00, Subfunction 0x23)
+// Subtracts register 'rt' from 'rs' (unsigned). Stores result in 'rd'.
+// Does not trap on overflow (wraps).
+// Based on Section 2.60
+void op_subu(Cpu* cpu, uint32_t instruction) {
+    // Extract register indices
+    uint32_t rd = instr_d(instruction);
+    uint32_t rs = instr_s(instruction);
+    uint32_t rt = instr_t(instruction);
+
+    // Read values from source registers
+    uint32_t rs_value = cpu_reg(cpu, rs);
+    uint32_t rt_value = cpu_reg(cpu, rt);
+
+    // Perform unsigned subtraction. Standard C unsigned math handles wrapping.
+    uint32_t result = rs_value - rt_value;
+
+    // Write result to destination register
+    cpu_set_reg(cpu, rd, result);
+
+    // Debug print
+    printf("Executed SUBU: R%u = R%u - R%u => 0x%08x\n", rd, rs, rt, result);
+}
+
+// SRA: Shift Right Arithmetic (Opcode 0x00, Subfunction 0x03)
+// Shifts register 'rt' right by 'shamt' bits, preserving the sign bit.
+// Stores result in 'rd'.
+// Based on Section 2.61
+void op_sra(Cpu* cpu, uint32_t instruction) {
+    // Extract the shift amount (5 bits).
+    uint32_t shamt = instr_shift(instruction);
+    // Extract the source register index (rt) - the value to shift.
+    uint32_t rt = instr_t(instruction);
+    // Extract the destination register index (rd).
+    uint32_t rd = instr_d(instruction);
+
+    // Read the value to be shifted from register rt.
+    uint32_t rt_value = cpu_reg(cpu, rt);
+
+    // Perform the arithmetic right shift.
+    // In C, right-shifting a *signed* integer type typically performs
+    // an arithmetic shift (implementation-defined, but common).
+    // Cast to int32_t first to encourage arithmetic shift.
+    int32_t signed_value = (int32_t)rt_value;
+    int32_t shifted_signed = signed_value >> shamt;
+    // Cast result back to uint32_t for storage.
+    uint32_t result = (uint32_t)shifted_signed;
+
+    // Write the result to the destination register rd.
+    cpu_set_reg(cpu, rd, result);
+
+    // Debug print.
+    printf("Executed SRA: R%u = R%u >> %u => 0x%08x\n", rd, rt, shamt, result);
+}
+
+// DIV: Divide Signed (Opcode 0x00, Subfunction 0x1a)
+// Divides rs by rt (signed). Stores quotient in LO, remainder in HI.
+// Handles division by zero and overflow cases.
+// Based on Section 2.62
+void op_div(Cpu* cpu, uint32_t instruction) {
+    // Extract source register indices
+    uint32_t rs = instr_s(instruction); // Numerator
+    uint32_t rt = instr_t(instruction); // Denominator
+
+    // Read values from source registers and treat as signed
+    int32_t n = (int32_t)cpu_reg(cpu, rs);
+    int32_t d = (int32_t)cpu_reg(cpu, rt);
+
+    // Handle special cases based on Guide Table 7 [cite: 727]
+    if (d == 0) {
+        // Division by zero [cite: 738]
+        cpu->hi = (uint32_t)n; // HI = numerator [cite: 739]
+        if (n >= 0) {
+            cpu->lo = 0xffffffff; // LO = -1 [cite: 740]
+        } else {
+            cpu->lo = 1;          // LO = 1 [cite: 741]
+        }
+        printf("Executed DIV: R%u (%d) / 0 => HI=0x%08x, LO=0x%08x (Division by Zero)\n",
+               rs, n, cpu->hi, cpu->lo);
+    } else if ((uint32_t)n == 0x80000000 && d == -1) {
+        // Overflow case: most negative / -1 [cite: 742]
+        cpu->hi = 0;              // HI = 0 [cite: 743]
+        cpu->lo = 0x80000000;     // LO = most negative (0x80000000) [cite: 743]
+        printf("Executed DIV: 0x80000000 / -1 => HI=0x%08x, LO=0x%08x (Overflow)\n",
+               cpu->hi, cpu->lo);
+    } else {
+        // Normal signed division
+        int32_t quotient = n / d;
+        int32_t remainder = n % d;
+
+        cpu->lo = (uint32_t)quotient;   // LO = quotient [cite: 746]
+        cpu->hi = (uint32_t)remainder;  // HI = remainder [cite: 745]
+        printf("Executed DIV: R%u (%d) / R%u (%d) => HI=0x%08x (rem %d), LO=0x%08x (quot %d)\n",
+               rs, n, rt, d, cpu->hi, remainder, cpu->lo, quotient);
+    }
+    // Note: In a real system, HI/LO are not available immediately.
+    // We are skipping the timing aspect for now.
+}
+
+// MFLO: Move From LO (Opcode 0x00, Subfunction 0x12)
+// Copies the value from the special LO register into GPR 'rd'.
+// Based on Section 2.63
+void op_mflo(Cpu* cpu, uint32_t instruction) {
+    // Extract the destination register index (rd).
+    uint32_t rd = instr_d(instruction);
+
+    // Read the value from the LO register.
+    uint32_t lo_value = cpu->lo;
+
+    // Write the value to the destination register rd.
+    // Note: MFLO itself doesn't have a delay slot like loads or MFC0.
+    cpu_set_reg(cpu, rd, lo_value);
+
+    // Debug print.
+    printf("Executed MFLO: R%u = LO (0x%08x)\n", rd, lo_value);
+}
+
+// SRL: Shift Right Logical (Opcode 0x00, Subfunction 0x02)
+// Shifts register 'rt' right by 'shamt' bits, inserting zeros from the left.
+// Stores result in 'rd'.
+// Based on Section 2.64
+void op_srl(Cpu* cpu, uint32_t instruction) {
+    // Extract the shift amount (5 bits).
+    uint32_t shamt = instr_shift(instruction);
+    // Extract the source register index (rt) - the value to shift.
+    uint32_t rt = instr_t(instruction);
+    // Extract the destination register index (rd).
+    uint32_t rd = instr_d(instruction);
+
+    // Read the value to be shifted from register rt.
+    uint32_t rt_value = cpu_reg(cpu, rt);
+
+    // Perform the logical right shift.
+    // In C, right-shifting an *unsigned* integer type performs a logical shift.
+    uint32_t result = rt_value >> shamt;
+
+    // Write the result to the destination register rd.
+    cpu_set_reg(cpu, rd, result);
+
+    // Debug print.
+    printf("Executed SRL: R%u = R%u >>> %u => 0x%08x\n", rd, rt, shamt, result);
+}
+
+// SLTIU: Set on Less Than Immediate Unsigned (Opcode 0b001011 = 0xB)
+// Compares register 'rs' (unsigned) with the sign-extended immediate (unsigned).
+// If rs < immediate, sets register 'rt' to 1, otherwise sets it to 0.
+// Based on Section 2.65
+void op_sltiu(Cpu* cpu, uint32_t instruction) {
+    // Extract the 16-bit immediate and sign-extend it. [cite: 763]
+    // The immediate is sign-extended *even though* the comparison is unsigned.
+    uint32_t imm_se = instr_imm_se(instruction);
+    // Extract the target register index (rt) - the destination.
+    uint32_t rt = instr_t(instruction);
+    // Extract the source register index (rs) - the value to compare.
+    uint32_t rs = instr_s(instruction);
+
+    // Read the value from the source register rs (already unsigned).
+    uint32_t rs_value = cpu_reg(cpu, rs);
+
+    // Perform the unsigned comparison between rs_value and the sign-extended immediate. [cite: 766]
+    uint32_t result = (rs_value < imm_se) ? 1 : 0;
+
+    // Write the result (0 or 1) back to the target register rt. [cite: 767]
+    cpu_set_reg(cpu, rt, result);
+
+    // Debug print.
+    printf("Executed SLTIU: R%u = (R%u (0x%x) < 0x%x (SE Imm)) ? 1 : 0 => %u\n",
+           rt, rs, rs_value, imm_se, result);
+}
+
+// DIVU: Divide Unsigned (Opcode 0x00, Subfunction 0x1b)
+// Divides rs by rt (unsigned). Stores quotient in LO, remainder in HI.
+// Handles division by zero.
+// Based on Section 2.66
+void op_divu(Cpu* cpu, uint32_t instruction) {
+    // Extract source register indices
+    uint32_t rs = instr_s(instruction); // Numerator
+    uint32_t rt = instr_t(instruction); // Denominator
+
+    // Read values from source registers (already unsigned)
+    uint32_t n = cpu_reg(cpu, rs);
+    uint32_t d = cpu_reg(cpu, rt);
+
+    // Handle special case: division by zero
+    if (d == 0) {
+        cpu->hi = n;          // HI = numerator
+        cpu->lo = 0xffffffff; // LO = all 1s
+        printf("Executed DIVU: R%u (0x%x) / 0 => HI=0x%08x, LO=0x%08x (Division by Zero)\n",
+               rs, n, cpu->hi, cpu->lo);
+    } else {
+        // Normal unsigned division
+        uint32_t quotient = n / d;
+        uint32_t remainder = n % d;
+
+        cpu->lo = quotient;   // LO = quotient
+        cpu->hi = remainder;  // HI = remainder
+        printf("Executed DIVU: R%u (0x%x) / R%u (0x%x) => HI=0x%08x (rem), LO=0x%08x (quot)\n",
+               rs, n, rt, d, cpu->hi, cpu->lo);
+    }
+    // Note: Timing ignored for now.
+}
+
+// MFHI: Move From HI (Opcode 0x00, Subfunction 0x10)
+// Copies the value from the special HI register into GPR 'rd'.
+// Based on Section 2.67
+void op_mfhi(Cpu* cpu, uint32_t instruction) {
+    // Extract the destination register index (rd).
+    uint32_t rd = instr_d(instruction);
+
+    // Read the value from the HI register.
+    uint32_t hi_value = cpu->hi;
+
+    // Write the value to the destination register rd.
+    cpu_set_reg(cpu, rd, hi_value);
+
+    // Debug print.
+    printf("Executed MFHI: R%u = HI (0x%08x)\n", rd, hi_value);
+}
+
+// SLT: Set on Less Than (Signed) (Opcode 0x00, Subfunction 0x2a)
+// Compares registers 'rs' and 'rt' (signed).
+// If rs < rt, sets register 'rd' to 1, otherwise sets it to 0.
+// Based on Section 2.68
+void op_slt(Cpu* cpu, uint32_t instruction) {
+    // Extract register indices
+    uint32_t rd = instr_d(instruction);
+    uint32_t rs = instr_s(instruction);
+    uint32_t rt = instr_t(instruction);
+
+    // Read values from source registers and treat as signed
+    int32_t rs_value = (int32_t)cpu_reg(cpu, rs);
+    int32_t rt_value = (int32_t)cpu_reg(cpu, rt);
+
+    // Perform the signed comparison.
+    uint32_t result = (rs_value < rt_value) ? 1 : 0;
+
+    // Write the result (0 or 1) back to the destination register rd.
+    cpu_set_reg(cpu, rd, result);
+
+    // Debug print.
+    printf("Executed SLT: R%u = (R%u (%d) < R%u (%d)) ? 1 : 0 => %u\n",
+           rd, rs, rs_value, rt, rt_value, result);
+}
+
+// SLT: Set on Less Than (Signed) (Opcode 0x00, Subfunction 0x2a)
+// Compares registers 'rs' and 'rt' (signed).
+// If rs < rt, sets register 'rd' to 1, otherwise sets it to 0.
+// Based on Section 2.68
+void op_slt(Cpu* cpu, uint32_t instruction) {
+    // Extract register indices
+    uint32_t rd = instr_d(instruction);
+    uint32_t rs = instr_s(instruction);
+    uint32_t rt = instr_t(instruction);
+
+    // Read values from source registers and treat as signed
+    int32_t rs_value = (int32_t)cpu_reg(cpu, rs);
+    int32_t rt_value = (int32_t)cpu_reg(cpu, rt);
+
+    // Perform the signed comparison.
+    uint32_t result = (rs_value < rt_value) ? 1 : 0;
+
+    // Write the result (0 or 1) back to the destination register rd.
+    cpu_set_reg(cpu, rd, result);
+
+    // Debug print.
+    printf("Executed SLT: R%u = (R%u (%d) < R%u (%d)) ? 1 : 0 => %u\n",
+           rd, rs, rs_value, rt, rt_value, result);
+}
+
+// SYSCALL: System Call (Opcode 0x00, Subfunction 0x0c)
+// Triggers a System Call Exception (Cause Code 0x8).
+// Based on Section 2.72
+void op_syscall(Cpu* cpu, uint32_t instruction) {
+    // The instruction argument itself is often unused for SYSCALL,
+    // but specific conventions might use it (ignored here).
+    // The main action is to trigger the exception.
+    printf("Executed SYSCALL: Triggering exception...\n");
+    cpu_exception(cpu, EXCEPTION_SYSCALL);
+}
 // Add implementations for ORI, SW, SLL, ADDIU etc. here...
 
 
@@ -851,6 +1298,13 @@ void decode_and_execute(Cpu* cpu, uint32_t instruction) {
             break;
         case 0b000011: // 0x3: JAL <-- ADD THIS CASE
             op_jal(cpu, instruction);
+            break;
+        case 0b001010: // Opcode 0x0A: SLTI <-- Add this case
+            op_slti(cpu, instruction);
+            break;        
+        // --- Special Instructions --
+        case 0b000001: // Opcode 0x01: BGEZ/BLTZ/BGEZAL/BLTZAL group <-- Add this case
+            op_bxx(cpu, instruction);
             break;    
 
         // --- Branch Instructions ---
@@ -863,6 +1317,13 @@ void decode_and_execute(Cpu* cpu, uint32_t instruction) {
         case 0b000111: // Opcode 0x7: BGTZ <-- Add this case
             op_bgtz(cpu, instruction);
             break; 
+        case 0b000110: // Opcode 0x6: BLEZ <-- Update this case
+            op_blez(cpu, instruction); // Call the actual function now
+            break;
+        case 0b001011: // Opcode 0x0B: SLTIU <-- Add this case
+            op_sltiu(cpu, instruction);
+            break;    
+   
             
         // --- I-Type Instructions (and others identified by primary opcode) ---
         case 0b001111: // Opcode 0xF: LUI (Load Upper Immediate) [cite: 178]
@@ -879,6 +1340,9 @@ void decode_and_execute(Cpu* cpu, uint32_t instruction) {
         case 0b100011: // 0x23: LW  <-- ADD THIS CASE
              op_lw(cpu, instruction);
              break;
+        case 0b100100: // 0x24: LBU
+             op_lbu(cpu,instruction);
+             break;    
         case 0b100000: // Opcode 0x20: LB  <-- Add this case
              op_lb(cpu, instruction);
              break;
@@ -915,24 +1379,54 @@ void decode_and_execute(Cpu* cpu, uint32_t instruction) {
                     case 0b000000: // Subfunction 0x00: SLL (Shift Left Logical) [cite: 288]
                         op_sll(cpu, instruction); // Call SLL implementation (to be added)
                         break;
+                    case 0b000010: // Subfunction 0x02: SRL <-- Add this case
+                        op_srl(cpu, instruction);
+                        break;
+                    case 0b101010: // Subfunction 0x2a: SLT <-- Add this case
+                        op_slt(cpu, instruction);
+                        break;
+                    case 0b001100: // Subfunction 0x0c: SYSCALL <-- Add this case
+                        op_syscall(cpu, instruction);
+                        break;     
+
 
                     case 0b001000: // Subfunction 0x08: JR  <-- Aggiungi questo case
                         op_jr(cpu, instruction);
                         break;
-                    
+                    case 0b001001: // Subfunction 0x09: JALR <-- Add this case
+                        op_jalr(cpu, instruction);
+                        break;    
+                    case 0b010010: // Subfunction 0x12: MFLO <-- Add this case
+                        op_mflo(cpu, instruction);
+                        break;
+                    case 0b010000: // Subfunction 0x10: MFHI <-- Add this case
+                        op_mfhi(cpu, instruction);
+                        break;    
+
                     case 0b100001: //0x21: ADDU
                         op_addu(cpu,instruction);
                         break;
                     case 0b100000: // Subfunction 0x20: ADD <-- Add this case
                         op_add(cpu, instruction);
-                        break;    
+                        break;
+                    case 0b100011: // Subfunction 0x23: SUBU <-- Add this case
+                        op_subu(cpu, instruction);
+                        break;  
+                    case 0b000011: // Subfunction 0x03: SRA <-- Add this case
+                        op_sra(cpu, instruction);
+                        break;          
                     case 0b100100: // Subfunction 0x24: AND <-- Add this case
                         op_and(cpu, instruction);
                         break;    
                     case 0b100101: //0x25: OR instruction
                         op_or(cpu,instruction);
                         break; 
-                        
+                    case 0b011010: // Subfunction 0x1a: DIV <-- Add this case
+                        op_div(cpu, instruction);
+                        break;    
+                    case 0b011011: // Subfunction 0x1b: DIVU <-- Add this case
+                        op_divu(cpu, instruction);
+                        break;    
                     case 0b101011: //0x2B: SLTU
                         op_sltu(cpu,instruction);
                         break;    
@@ -988,7 +1482,17 @@ void cpu_init(Cpu* cpu, Interconnect* inter) {
     cpu->load_reg_idx = REG_ZERO; // Target $zero initially (no effect)
     cpu->load_value = 0;
 
-    printf("CPU Initialized. PC = 0x%08x, Next PC = 0x%08x, SR=0x%08x, GPRs initialized.\n",
+    // Initialize new COP0 registers
+    cpu->cause = 0; // Cause Register
+    cpu->epc = 0;   // Exception PC
+    cpu->current_pc = 0xbfc0000; // Initialize current_pc
+
+
+    // Initialize HI and LO to garbage values (like other regs) [cite: 730]
+    cpu->hi = 0xdeadbeef;
+    cpu->lo = 0xdeadbeef;
+
+    printf("CPU Initialized. PC = 0x%08x, Next PC = 0x%08x, SR=0x%08x, LO=0x%08x, HI=0x%08x, CAUSE=0x%x, EPC=0x%x,GPRs initialized.\n",
             cpu->pc, cpu->next_pc, cpu->sr);    
 
     // Print confirmation message.
@@ -1012,39 +1516,76 @@ void cpu_run_next_instruction(Cpu* cpu) {
 
     // --- Fetch & Branch Delay Slot Handling ---
     // 1. Get the address of the instruction to execute *now*.
-    uint32_t current_instruction_pc = cpu->pc;
+    cpu ->current_pc = cpu->pc; //Store PC before execution
+    // 2. Check for PC alignment *before* fetching (Guide Section 2.79)
+    if (cpu->current_pc % 4 != 0) {
+        fprintf(stderr, "PC Alignment Error: PC=0x%08x\n", cpu->current_pc);
+        cpu_exception(cpu, EXCEPTION_LOAD_ADDRESS_ERROR); // Address error on instruction fetch
+        // Exception occurred, state is updated by cpu_exception,
+        // so we just return to let the next cycle run the handler.
+        return;
+   }
 
-    // 2. Fetch the instruction at that address.
-    uint32_t instruction = cpu_load32(cpu, current_instruction_pc);
+    // 3. Fetch the instruction at that address.
+    uint32_t instruction = cpu_load32(cpu, cpu->current_pc);
 
-    // 3. Prepare PC state for the *next* cycle (handles branch delay).
+    // 4. Prepare PC state for the *next* cycle (handles branch delay).
+    // This happens *before* execution, so branches/jumps in decode_and_execute
+    // will overwrite next_pc if needed.
     cpu->pc = cpu->next_pc;
-    cpu->next_pc = cpu->pc + 4; // Default next instruction (unless branch changes next_pc)
+    cpu->next_pc = cpu->pc + 4; // Default next instruction
 
     // --- Commit State BEFORE Execute ---
-    // Copy the output registers from the *previous* instruction execution
-    // (including the just-applied pending load) into the input registers
-    // that the *current* instruction will read from.
-    // Based on Guide §2.32 [cite: 452]
     memcpy(cpu->regs, cpu->out_regs, sizeof(cpu->regs));
-    // Ensure R0 remains 0 after copy, just in case.
-    cpu->regs[REG_ZERO] = 0;
+    cpu->regs[REG_ZERO] = 0; // Ensure R0 remains 0 after copy
 
     // --- Decode and Execute Current Instruction ---
-    // This reads from 'cpu->regs' and writes results to 'cpu->out_regs'.
-    // If it's an LW, it updates cpu->load_reg_idx/load_value.
-    // If it's a branch/jump, it updates cpu->next_pc.
     decode_and_execute(cpu, instruction);
 
-    // Safety net: Ensure R0 ($zero) in out_regs remains 0 after execution.
-    // Usually handled by cpu_set_reg, but good practice.
+    // --- Safety net for R0 ---
     cpu->out_regs[REG_ZERO] = 0;
+}
 
-    // At the end of this cycle:
-    // - 'cpu->regs' holds the state visible to the instruction we just executed.
-    // - 'cpu->out_regs' holds the state AFTER this instruction executed.
-    // - 'cpu->load_reg_idx/load_value' holds any load scheduled by this instruction.
-    // - 'cpu->pc' holds the address of the NEXT instruction to execute.
-    // - 'cpu->next_pc' holds the address AFTER the next instruction (or branch target).
-    // The results in out_regs/pending load will be committed at the START of the next cycle.
+// Triggers a CPU exception
+// Based on Section 2.71
+void cpu_exception(Cpu* cpu, ExceptionCause cause) {
+    printf("!!! CPU Exception !!! Cause: 0x%02x at PC=0x%08x\n", cause, cpu->current_pc);
+
+    // Determine exception handler address based on SR bit 22 (BEV)
+    uint32_t handler_addr;
+    int bev_set = (cpu->sr >> 22) & 1;
+    if (bev_set) {
+        handler_addr = 0xbfc00180; // Boot Exception Vector
+    } else {
+        handler_addr = 0x80000080; // General Exception Vector
+    }
+
+    // Update Status Register (SR)
+    // Shift bits [5:0] left by 2 positions ("push" onto interrupt/mode stack)
+    // This disables interrupts and forces kernel mode in the new state.
+    uint32_t mode = cpu->sr & 0x3f; // Get bottom 6 bits (current + 2 previous states)
+    cpu->sr &= ~0x3f;               // Clear bottom 6 bits
+    cpu->sr |= (mode << 2) & 0x3f;  // Shift stack left (push 00) and re-insert
+
+    // Update Cause Register
+    // Set bits [6:2] (ExcCode) to the exception cause code.
+    // Clear other writable bits for now (e.g., Interrupt Pending, BD).
+    // Note: We should preserve IP bits [15:8] if/when interrupts are added.
+    cpu->cause &= ~0x7C; // Clear bits 6-2 (ExcCode)
+    // cpu->cause &= ~(1 << 31); // Clear Branch Delay (BD) bit initially
+    cpu->cause |= ((uint32_t)cause << 2); // Set the exception code
+
+    // Update EPC (Exception PC)
+    // Save the address of the instruction that caused the exception.
+    // For now, use current_pc. Need refinement for delay slots (Section 2.76).
+    cpu->epc = cpu->current_pc; //
+    // If exception is in branch delay slot (check a flag set by branch/jump):
+    // {
+    //    cpu->epc = cpu->current_pc - 4;
+    //    cpu->cause |= (1 << 31); // Set BD bit in Cause
+    // }
+
+    // Jump to the exception handler (no delay slot)
+    cpu->pc = handler_addr;
+    cpu->next_pc = cpu->pc + 4;
 }
