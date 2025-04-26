@@ -1,6 +1,7 @@
 #ifndef CPU_H       // Include guard: Prevents multiple inclusions of this header
 #define CPU_H
 
+#include <stdbool.h> // <-- Include this for bool type
 #include <stdint.h>       // Standard header for fixed-width integer types like uint32_t
 #include "interconnect.h" // We need the definition of the Interconnect struct
 
@@ -46,6 +47,9 @@ typedef struct {
     uint32_t current_pc;// Needed for precise exception EPC (Guide §2.71)
     uint32_t hi, lo;    // HI/LO registers for multiplication/division results (Guide §2.12, §2.62) [cite: 211]
 
+    // ---> ADD THESE TWO LINES <---
+    bool branch_taken;      // Set if the current instruction resulted in a branch
+    bool in_delay_slot;     // Set if the *next* instruction is in a delay slot
 } Cpu;
 
 
@@ -107,6 +111,8 @@ void cpu_run_next_instruction(Cpu* cpu);
 // Fetches a 32-bit word from memory via the interconnect.
 // Based on Guide Section 2.4's load32 requirement [cite: 63]
 uint32_t cpu_load32(Cpu* cpu, uint32_t address);
+
+uint16_t cpu_load16(Cpu* cpu, uint32_t address); // <-- ADD DECLARATION
 
 // Decodes the fetched instruction and calls the appropriate execution function.
 // Based on Guide Section 2.10 [cite: 171]
@@ -174,8 +180,34 @@ void op_syscall(Cpu* cpu, uint32_t instruction); // <-- Add this line
 void op_nor(Cpu* cpu, uint32_t instruction); // <-- Add this line
 void op_mtlo(Cpu* cpu, uint32_t instruction); // <-- Add this line
 void op_mthi(Cpu* cpu, uint32_t instruction); // <-- Add this line
-
-
+void op_rfe(Cpu* cpu, uint32_t instruction); // <-- ADD THIS LINE (Already present in your file!)
+void op_lhu(Cpu* cpu, uint32_t instruction);
+void op_lh(Cpu* cpu, uint32_t instruction);
+void op_sllv(Cpu* cpu, uint32_t instruction);
+void op_srav(Cpu* cpu, uint32_t instruction);
+void op_srlv(Cpu* cpu, uint32_t instruction);
+void op_multu(Cpu* cpu, uint32_t instruction);
+void op_xor(Cpu* cpu, uint32_t instruction);
+void op_break(Cpu* cpu, uint32_t instruction);
+void op_mult(Cpu* cpu, uint32_t instruction);
+void op_sub(Cpu* cpu, uint32_t instruction);
+void op_xori(Cpu* cpu, uint32_t instruction);
+void op_cop1(Cpu* cpu, uint32_t instruction); // COP1 (Floating Point - Unused)
+void op_cop2(Cpu* cpu, uint32_t instruction); // COP2 (GTE)
+void op_cop3(Cpu* cpu, uint32_t instruction); // COP3 (Unused)
+void op_lwl(Cpu* cpu, uint32_t instruction); // Load Word Left
+void op_lwr(Cpu* cpu, uint32_t instruction); // Load Word Right
+void op_swl(Cpu* cpu, uint32_t instruction); // Store Word Left
+void op_swr(Cpu* cpu, uint32_t instruction); // Store Word Right
+void op_lwc0(Cpu* cpu, uint32_t instruction); // Load Word Coprocessor 0
+void op_lwc1(Cpu* cpu, uint32_t instruction); // Load Word Coprocessor 1
+void op_lwc2(Cpu* cpu, uint32_t instruction); // Load Word Coprocessor 2 (GTE)
+void op_lwc3(Cpu* cpu, uint32_t instruction); // Load Word Coprocessor 3
+void op_swc0(Cpu* cpu, uint32_t instruction); // Store Word Coprocessor 0
+void op_swc1(Cpu* cpu, uint32_t instruction); // Store Word Coprocessor 1
+void op_swc2(Cpu* cpu, uint32_t instruction); // Store Word Coprocessor 2 (GTE)
+void op_swc3(Cpu* cpu, uint32_t instruction); // Store Word Coprocessor 3
+void op_illegal(Cpu* cpu, uint32_t instruction); // Illegal instruction handler
 // Memory Access via CPU (delegates to Interconnect)
 
 

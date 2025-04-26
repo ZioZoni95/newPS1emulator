@@ -3,6 +3,7 @@
 #include <stdlib.h>
 #include <limits.h>
 #include <string.h> // For memcpy
+#include <stdint.h> // Make sure this is included at the top of cpu.c
 
 // --- Memory Access via Interconnect ---
 // Fetches a 32-bit word (like an instruction) from the specified memory address.
@@ -10,6 +11,11 @@
 uint32_t cpu_load32(Cpu* cpu, uint32_t address) {
     // Call the interconnect's function to handle the load based on the address map.
     return interconnect_load32(cpu->inter, address);
+}
+
+// NEW: Delegates 16-bit memory load to the interconnect.
+uint16_t cpu_load16(Cpu* cpu, uint32_t address) {
+    return interconnect_load16(cpu->inter, address); // Assumes interconnect_load16 exists
 }
 
 // NEW: Delegates memory store to the interconnect.
@@ -201,6 +207,9 @@ void op_j(Cpu* cpu, uint32_t instruction) {
     // Set the NEXT program counter (the one AFTER the delay slot).
     cpu->next_pc = target_address;
 
+    // ---> SET BRANCH FLAG <---
+    cpu->branch_taken = true;
+
     printf("Executed J: Branch delay slot. Next PC set to 0x%08x\n", target_address);
 }
 
@@ -309,7 +318,10 @@ void op_cop0(Cpu* cpu, uint32_t instruction) {
             break;
         case 0b00000: // Value 0: MFC0 (Move From Coprocessor 0) <-- Add this case
             op_mfc0(cpu, instruction);
-            break;    
+            break;
+        case 0b10000: // Value 16: RFE (Return From Exception) [cite: 911]
+            op_rfe(cpu, instruction); // You already have the op_rfe implementation
+            break;        
         // Add cases for MFC0 (0b00000), RFE (sub-case of 0b10000) later
         default:
              fprintf(stderr, "Unhandled COP0 instruction: PC=0x%08x, Inst=0x%08x, CopOpcode=0x%02x\n",
@@ -336,6 +348,11 @@ void op_bne(Cpu* cpu, uint32_t instruction) {
     if (rs_value != rt_value) {
         // If not equal, call the branch helper to update next_pc.
         cpu_branch(cpu, imm_se);
+        
+        // ---> SET BRANCH FLAG <---
+        cpu->branch_taken = true;
+        // ------------------------
+
         printf("Executed BNE: R%u (0x%x) != R%u (0x%x), Branch taken. Next PC will be 0x%08x\n",
                rs, rs_value, rt, rt_value, cpu->next_pc);
     } else {
@@ -362,6 +379,11 @@ void op_bgtz(Cpu* cpu, uint32_t instruction) {
     if (rs_value > 0) {
         // If greater than zero, call the branch helper to update next_pc.
         cpu_branch(cpu, imm_se);
+
+        // ---> SET BRANCH FLAG <---
+        cpu->branch_taken = true;
+        // ------------------------
+
         printf("Executed BGTZ: R%u (%d) > 0, Branch taken. Next PC will be 0x%08x\n",
                rs, rs_value, cpu->next_pc);
     } else {
@@ -678,7 +700,10 @@ void op_jal(Cpu* cpu, uint32_t instruction) {
     // Upper 4 bits from delay slot PC (which is current cpu->pc)
     uint32_t target_address = (cpu->pc & 0xF0000000) | (target_imm << 2);
     cpu->next_pc = target_address;
-
+    
+    // ---> SET BRANCH FLAG <---
+    cpu->branch_taken = true;
+    // ------------------------
     // Debug print.
     printf("Executed JAL: R31 = 0x%08x, Branch delay slot. Next PC set to 0x%08x\n",
            return_addr, target_address);
@@ -833,6 +858,10 @@ void op_jr(Cpu* cpu, uint32_t instruction) {
     // Set the *next* program counter (the one AFTER the delay slot executes).
     cpu->next_pc = target_address; // [cite: 555] (adattato per next_pc)
 
+    // ---> SET BRANCH FLAG <---
+    cpu->branch_taken = true;
+    // ------------------------
+
     // Debug print. Often used with R31 ($ra) to return from function.
     printf("Executed JR: Jump to R%u (0x%08x). Branch delay slot. Next PC set to 0x%08x\n",
            rs, target_address, target_address);
@@ -856,6 +885,11 @@ void op_beq(Cpu* cpu, uint32_t instruction) {
     if (rs_value == rt_value) {
         // If equal, call the branch helper to update next_pc.
         cpu_branch(cpu, imm_se);
+
+        // ---> SET BRANCH FLAG <---
+        cpu->branch_taken = true;
+        // ------------------------
+
         printf("Executed BEQ: R%u (0x%x) == R%u (0x%x), Branch taken. Next PC will be 0x%08x\n",
                rs, rs_value, rt, rt_value, cpu->next_pc);
     } else {
@@ -882,6 +916,11 @@ void op_blez(Cpu* cpu, uint32_t instruction) {
     if (rs_value <= 0) {
         // If less than or equal to zero, call the branch helper to update next_pc.
         cpu_branch(cpu, imm_se);
+
+        // ---> SET BRANCH FLAG <---
+        cpu->branch_taken = true;
+        // ------------------------
+
         printf("Executed BLEZ: R%u (%d) <= 0, Branch taken. Next PC will be 0x%08x\n",
                rs, rs_value, cpu->next_pc);
     } else {
@@ -891,6 +930,654 @@ void op_blez(Cpu* cpu, uint32_t instruction) {
     }
 }
 
+// SLLV: Shift Left Logical Variable (Opcode 0x00, Subfunction 0x04)
+// Shifts register 'rt' left by the amount specified in the lower 5 bits
+// of register 'rs'. Stores the result in 'rd'.
+// Based on Section 2.83
+void op_sllv(Cpu* cpu, uint32_t instruction) {
+    uint32_t rd = instr_d(instruction);         // Destination register index
+    uint32_t rs = instr_s(instruction);         // Register containing shift amount
+    uint32_t rt = instr_t(instruction);         // Register containing value to shift
+
+    uint32_t value_to_shift = cpu_reg(cpu, rt);
+    // Shift amount comes from the lower 5 bits of register rs
+    uint32_t shift_amount = cpu_reg(cpu, rs) & 0x1F; // Mask to 5 bits
+
+    // Perform the logical left shift
+    uint32_t result = value_to_shift << shift_amount;
+
+    // Write the result to the destination register rd
+    cpu_set_reg(cpu, rd, result);
+
+    printf("Executed SLLV: R%u = R%u << (R%u & 0x1f (%u)) => 0x%08x\n",
+           rd, rt, rs, shift_amount, result);
+}
+
+// LHU: Load Halfword Unsigned (Opcode 0b100101 = 0x25)
+// Loads a 16-bit value from memory, zero-extends it to 32 bits,
+// and schedules the write to register 'rt' after the delay slot.
+// Address = rs + sign_extended_offset.
+// Based on Section 2.82
+void op_lhu(Cpu* cpu, uint32_t instruction) {
+    // Check cache isolation (consistency with other loads)
+    if ((cpu->sr & 0x10000) != 0) {
+        printf("Executed LHU: Ignored (Cache Isolated, SR=0x%08x)\n", cpu->sr);
+        // Ensure no pending load is scheduled if ignored
+        // (Current logic in run_next_instruction already clears pending load target)
+        return;
+    }
+
+    uint32_t offset = instr_imm_se(instruction); // Sign-extended immediate offset
+    uint32_t rt = instr_t(instruction);         // Target register index
+    uint32_t rs = instr_s(instruction);         // Base address register index
+
+    // Read base address from rs
+    uint32_t base_addr = cpu_reg(cpu, rs);
+    // Calculate effective memory address
+    uint32_t address = base_addr + offset;
+
+    // Check alignment (must be multiple of 2 for halfword)
+    if (address % 2 != 0) {
+        fprintf(stderr, "LHU Alignment Error: Address 0x%08x\n", address);
+        cpu_exception(cpu, EXCEPTION_LOAD_ADDRESS_ERROR); // Trigger Address Error Load exception
+        return; // Stop processing this instruction after exception
+    }
+
+    // Load the 16-bit halfword from memory via CPU helper -> interconnect
+    uint16_t halfword_loaded = cpu_load16(cpu, address);
+
+    // *** Zero-extend the loaded halfword to 32 bits ***
+    // Simply casting uint16_t to uint32_t achieves zero-extension.
+    uint32_t value_zero_extended = (uint32_t)halfword_loaded;
+
+    // Schedule the zero-extended value for the load delay slot
+    cpu->load_reg_idx = rt;
+    cpu->load_value = value_zero_extended;
+
+    printf("Executed LHU: R%u <- M[R%u + %d (0x%08x)] = 0x%04x (zero-extended to 0x%08x) @ 0x%08x (Delayed)\n",
+           rt, rs, (int16_t)offset, offset, halfword_loaded, value_zero_extended, address);
+}
+
+// LH: Load Halfword (Signed) (Opcode 0b100001 = 0x21)
+// Loads a 16-bit value from memory, sign-extends it to 32 bits,
+// and schedules the write to register 'rt' after the delay slot.
+// Address = rs + sign_extended_offset.
+// Based on Section 2.84
+void op_lh(Cpu* cpu, uint32_t instruction) {
+    // Check cache isolation
+    if ((cpu->sr & 0x10000) != 0) {
+        printf("Executed LH: Ignored (Cache Isolated, SR=0x%08x)\n", cpu->sr);
+        return;
+    }
+
+    uint32_t offset = instr_imm_se(instruction); // Sign-extended immediate offset
+    uint32_t rt = instr_t(instruction);         // Target register index
+    uint32_t rs = instr_s(instruction);         // Base address register index
+
+    // Read base address from rs
+    uint32_t base_addr = cpu_reg(cpu, rs);
+    // Calculate effective memory address
+    uint32_t address = base_addr + offset;
+
+    // Check alignment (must be multiple of 2 for halfword)
+    if (address % 2 != 0) {
+        fprintf(stderr, "LH Alignment Error: Address 0x%08x\n", address);
+        cpu_exception(cpu, EXCEPTION_LOAD_ADDRESS_ERROR); // Trigger Address Error Load exception
+        return;
+    }
+
+    // Load the 16-bit halfword from memory via CPU helper -> interconnect
+    uint16_t halfword_loaded = cpu_load16(cpu, address);
+
+    // *** Sign-extend the loaded halfword to 32 bits ***
+    // Cast uint16 -> int16 -> int32 (performs sign extension) -> uint32
+    uint32_t value_sign_extended = (uint32_t)(int32_t)(int16_t)halfword_loaded;
+
+    // Schedule the sign-extended value for the load delay slot
+    cpu->load_reg_idx = rt;
+    cpu->load_value = value_sign_extended;
+
+    printf("Executed LH: R%u <- M[R%u + %d (0x%08x)] = 0x%04x (sign-extended to 0x%08x) @ 0x%08x (Delayed)\n",
+           rt, rs, (int16_t)offset, offset, halfword_loaded, value_sign_extended, address);
+}
+
+// SRAV: Shift Right Arithmetic Variable (Opcode 0x00, Subfunction 0x07)
+// Arithmetically shifts register 'rt' right by the amount specified in the
+// lower 5 bits of register 'rs'. Stores the result in 'rd'.
+// Based on Section 2.86
+void op_srav(Cpu* cpu, uint32_t instruction) {
+    uint32_t rd = instr_d(instruction);         // Destination register index
+    uint32_t rs = instr_s(instruction);         // Register containing shift amount
+    uint32_t rt = instr_t(instruction);         // Register containing value to shift
+
+    // Read value to shift and cast to signed *before* shifting
+    int32_t value_to_shift_signed = (int32_t)cpu_reg(cpu, rt);
+
+    // Shift amount comes from the lower 5 bits of register rs
+    uint32_t shift_amount = cpu_reg(cpu, rs) & 0x1F; // Mask to 5 bits
+
+    // Perform the arithmetic right shift (C >> on signed type is usually arithmetic)
+    int32_t shifted_signed = value_to_shift_signed >> shift_amount;
+
+    // Cast result back to uint32_t for storage
+    uint32_t result = (uint32_t)shifted_signed;
+
+    // Write the result to the destination register rd
+    cpu_set_reg(cpu, rd, result);
+
+    printf("Executed SRAV: R%u = R%d >> (R%u & 0x1f (%u)) => 0x%08x\n",
+           rd, rt, rs, shift_amount, result);
+}
+
+// SRLV: Shift Right Logical Variable (Opcode 0x00, Subfunction 0x06)
+// Logically shifts register 'rt' right by the amount specified in the
+// lower 5 bits of register 'rs'. Stores the result in 'rd'.
+// Based on Section 2.87
+void op_srlv(Cpu* cpu, uint32_t instruction) {
+    uint32_t rd = instr_d(instruction);         // Destination register index
+    uint32_t rs = instr_s(instruction);         // Register containing shift amount
+    uint32_t rt = instr_t(instruction);         // Register containing value to shift
+
+    // Read value to shift (already uint32_t)
+    uint32_t value_to_shift = cpu_reg(cpu, rt);
+
+    // Shift amount comes from the lower 5 bits of register rs
+    uint32_t shift_amount = cpu_reg(cpu, rs) & 0x1F; // Mask to 5 bits
+
+    // Perform the logical right shift (C >> on unsigned type is logical)
+    uint32_t result = value_to_shift >> shift_amount;
+
+    // Write the result to the destination register rd
+    cpu_set_reg(cpu, rd, result);
+
+    printf("Executed SRLV: R%u = R%u >> (R%u & 0x1f (%u)) => 0x%08x\n",
+           rd, rt, rs, shift_amount, result);
+}
+
+// MULTU: Multiply Unsigned (Opcode 0x00, Subfunction 0x19)
+// Multiplies rs by rt (unsigned). Stores 64-bit result in HI/LO.
+// Based on Section 2.88
+void op_multu(Cpu* cpu, uint32_t instruction) {
+    uint32_t rs = instr_s(instruction);
+    uint32_t rt = instr_t(instruction);
+
+    // Read values and cast to 64-bit unsigned for multiplication
+    uint64_t val_rs = (uint64_t)cpu_reg(cpu, rs);
+    uint64_t val_rt = (uint64_t)cpu_reg(cpu, rt);
+
+    // Perform 64-bit multiplication
+    uint64_t result_64 = val_rs * val_rt;
+
+    // Store upper 32 bits in HI
+    cpu->hi = (uint32_t)(result_64 >> 32);
+    // Store lower 32 bits in LO
+    cpu->lo = (uint32_t)(result_64 & 0xFFFFFFFF); // Masking is optional here due to cast
+
+    // Note: MIPS multiplication latency is ignored for now.
+    printf("Executed MULTU: (HI, LO) = R%u * R%u => (0x%08x, 0x%08x)\n",
+           rs, rt, cpu->hi, cpu->lo);
+}
+
+// XOR: Bitwise Exclusive OR (Opcode 0x00, Subfunction 0x26)
+// Calculates rs ^ rt and stores the result in rd.
+// Based on Section 2.93
+void op_xor(Cpu* cpu, uint32_t instruction) {
+    uint32_t rd = instr_d(instruction);
+    uint32_t rs = instr_s(instruction);
+    uint32_t rt = instr_t(instruction);
+
+    // Read values from source registers
+    uint32_t rs_value = cpu_reg(cpu, rs);
+    uint32_t rt_value = cpu_reg(cpu, rt);
+
+    // Perform bitwise XOR
+    uint32_t result = rs_value ^ rt_value;
+
+    // Write result to destination register
+    cpu_set_reg(cpu, rd, result);
+
+    printf("Executed XOR: R%u = R%u ^ R%u => 0x%08x\n", rd, rs, rt, result);
+}
+
+// BREAK: Breakpoint (Opcode 0x00, Subfunction 0x0d)
+// Triggers a Breakpoint Exception.
+// Based on Section 2.94
+void op_break(Cpu* cpu, uint32_t instruction) {
+    // The instruction argument might sometimes contain a code for the debugger,
+    // but the CPU itself just triggers the exception.
+    printf("Executed BREAK: Triggering exception...\n");
+    cpu_exception(cpu, EXCEPTION_BREAK);
+}
+
+// MULT: Multiply (Signed) (Opcode 0x00, Subfunction 0x18)
+// Multiplies rs by rt (signed). Stores 64-bit result in HI/LO.
+// Based on Section 2.95
+void op_mult(Cpu* cpu, uint32_t instruction) {
+    uint32_t rs = instr_s(instruction);
+    uint32_t rt = instr_t(instruction);
+
+    // Read values, cast to signed 32-bit, then sign-extend to 64-bit signed
+    int64_t val_rs = (int64_t)(int32_t)cpu_reg(cpu, rs);
+    int64_t val_rt = (int64_t)(int32_t)cpu_reg(cpu, rt);
+
+    // Perform 64-bit signed multiplication
+    int64_t result_s64 = val_rs * val_rt;
+
+    // Treat the 64-bit result as unsigned for splitting into HI/LO
+    uint64_t result_u64 = (uint64_t)result_s64;
+
+    // Store upper 32 bits in HI
+    cpu->hi = (uint32_t)(result_u64 >> 32);
+    // Store lower 32 bits in LO
+    cpu->lo = (uint32_t)(result_u64 & 0xFFFFFFFF);
+
+    // Note: MIPS multiplication latency is ignored for now.
+    printf("Executed MULT: (HI, LO) = R%d * R%d => (0x%08x, 0x%08x)\n",
+           rs, rt, cpu->hi, cpu->lo);
+}
+
+// SUB: Subtract (Signed, with Overflow Check) (Opcode 0x00, Subfunction 0x22)
+// Subtracts rt from rs (signed). Stores result in rd.
+// Triggers exception on signed overflow.
+// Based on Section 2.96
+void op_sub(Cpu* cpu, uint32_t instruction) {
+    uint32_t rd = instr_d(instruction);
+    uint32_t rs = instr_s(instruction);
+    uint32_t rt = instr_t(instruction);
+
+    // Read values from source registers, cast to signed
+    int32_t rs_value = (int32_t)cpu_reg(cpu, rs);
+    int32_t rt_value = (int32_t)cpu_reg(cpu, rt);
+
+    // Perform signed subtraction and check for overflow
+    // Method 1: Using GCC/Clang built-in (preferred)
+    int32_t result;
+    if (__builtin_sub_overflow(rs_value, rt_value, &result)) {
+        // Overflow occurred!
+        fprintf(stderr, "SUB Signed Overflow: %d - %d\n", rs_value, rt_value);
+        cpu_exception(cpu, EXCEPTION_OVERFLOW);
+    } else {
+        // No overflow, write the result (cast back to uint32_t for storage).
+        cpu_set_reg(cpu, rd, (uint32_t)result);
+        printf("Executed SUB: R%u = R%u - R%u => 0x%08x\n", rd, rs, rt, (uint32_t)result);
+    }
+
+    /*
+    // Method 2: Manual check (Less preferred, more complex to get right)
+    // Check if signs are different AND sign of result is different from minuend (rs_value)
+    int32_t result = rs_value - rt_value; // Perform subtraction first
+    if (((rs_value ^ rt_value) & (rs_value ^ result)) < 0) {
+         // Overflow occurred!
+         fprintf(stderr, "SUB Signed Overflow: %d - %d\n", rs_value, rt_value);
+         cpu_exception(cpu, EXCEPTION_OVERFLOW);
+    } else {
+        // No overflow, write the result.
+        cpu_set_reg(cpu, rd, (uint32_t)result);
+        printf("Executed SUB: R%u = R%u - R%u => 0x%08x\n", rd, rs, rt, (uint32_t)result);
+    }
+    */
+}
+
+// XORI: Bitwise Exclusive OR Immediate (Opcode 0b001110 = 0xE)
+// Performs a bitwise XOR between register 'rs' and the zero-extended
+// immediate value. Stores the result in register 'rt'.
+// Based on Section 2.97
+void op_xori(Cpu* cpu, uint32_t instruction) {
+    // Immediate value is zero-extended by instr_imm helper
+    uint32_t imm_zero_ext = instr_imm(instruction);
+    // Target register index (rt) - this is the destination
+    uint32_t rt = instr_t(instruction);
+    // Source register index (rs)
+    uint32_t rs = instr_s(instruction);
+
+    // Read the value from the source register rs.
+    uint32_t rs_value = cpu_reg(cpu, rs);
+
+    // Perform the bitwise XOR operation.
+    uint32_t result = rs_value ^ imm_zero_ext;
+
+    // Write the result back to the target register rt.
+    cpu_set_reg(cpu, rt, result);
+
+    printf("Executed XORI: R%u = R%u ^ 0x%04x => 0x%08x\n", rt, rs, imm_zero_ext, result);
+}
+
+// COP1: Coprocessor 1 Instructions (Opcode 0x11)
+// COP1 (FPU) is not implemented on PSX. Triggers exception.
+// Based on Section 2.98
+void op_cop1(Cpu* cpu, uint32_t instruction) {
+    printf("Unhandled COP1 instruction: 0x%08x\n", instruction);
+    cpu_exception(cpu, EXCEPTION_COPROCESSOR_ERROR);
+}
+
+// COP2: Coprocessor 2 (GTE) Instructions (Opcode 0x12)
+// Geometry Transformation Engine. Implementation deferred. Panics for now.
+// Based on Section 2.98
+void op_cop2(Cpu* cpu, uint32_t instruction) {
+    // For now, we panic if we encounter a GTE instruction.
+    // Later, this will dispatch GTE-specific commands.
+    fprintf(stderr, "Unhandled GTE instruction: 0x%08x at PC=0x%08x\n",
+            instruction, cpu->current_pc);
+    // Optionally, trigger Coprocessor Unusable exception instead of panic?
+    // cpu_exception(cpu, EXCEPTION_COPROCESSOR_ERROR);
+    exit(1); // Panic as per guide's suggestion for now
+}
+
+// COP3: Coprocessor 3 Instructions (Opcode 0x13)
+// COP3 is not implemented on PSX. Triggers exception.
+// Based on Section 2.98
+void op_cop3(Cpu* cpu, uint32_t instruction) {
+    printf("Unhandled COP3 instruction: 0x%08x\n", instruction);
+    cpu_exception(cpu, EXCEPTION_COPROCESSOR_ERROR);
+}
+
+// LWL: Load Word Left (Little-Endian) (Opcode 0b100010 = 0x22)
+// Loads the MSBs of a potentially unaligned word into the MSBs of rt.
+// Based on Section 2.99.1
+void op_lwl(Cpu* cpu, uint32_t instruction) {
+    // Check cache isolation? Guide doesn't explicitly mention for LWL/LWR
+    // Let's assume they might be affected like LW for consistency.
+    if ((cpu->sr & 0x10000) != 0) {
+        printf("Executed LWL: Ignored (Cache Isolated, SR=0x%08x)\n", cpu->sr);
+        return;
+    }
+
+    uint32_t offset = instr_imm_se(instruction);
+    uint32_t rt = instr_t(instruction); // Target register index
+    uint32_t rs = instr_s(instruction); // Base address register index
+
+    uint32_t addr = cpu_reg(cpu, rs) + offset;
+
+    // LWL/LWR bypass the load delay slot *if* the target register rt
+    // is the same as the currently pending load register.
+    // We need the value that *will be* in the register *before* this load completes.
+    // This is either the value currently pending load, or the last value written.
+    uint32_t current_rt_value;
+    if (cpu->load_reg_idx == rt) {
+        // Use the value pending from the previous load instruction
+        current_rt_value = cpu->load_value;
+        printf("LWL: Using pending load value (0x%08x) for R%u\n", current_rt_value, rt);
+    } else {
+        // Use the value from the output register set of the previous instruction
+        current_rt_value = cpu->out_regs[rt]; // Use out_regs BEFORE memcpy in run_next
+         printf("LWL: Using out_regs value (0x%08x) for R%u\n", current_rt_value, rt);
+    }
+
+
+    // Load the *aligned* word containing the address
+    uint32_t aligned_addr = addr & ~3; // addr & 0xFFFFFFFC
+    uint32_t aligned_word = cpu_load32(cpu, aligned_addr); // No alignment exception here
+
+    uint32_t merged_value;
+
+    // Merge based on address alignment (Little Endian)
+    switch (addr & 3) {
+        case 0: // Load bits 31..24 from aligned_word[0]
+            merged_value = (current_rt_value & 0x00FFFFFF) | (aligned_word << 24);
+            break;
+        case 1: // Load bits 31..16 from aligned_word[0..1]
+            merged_value = (current_rt_value & 0x0000FFFF) | (aligned_word << 16);
+            break;
+        case 2: // Load bits 31..8 from aligned_word[0..2]
+            merged_value = (current_rt_value & 0x000000FF) | (aligned_word << 8);
+            break;
+        case 3: // Load bits 31..0 from aligned_word[0..3]
+            merged_value = (current_rt_value & 0x00000000) | (aligned_word << 0);
+            break;
+        default: // Should be unreachable
+             fprintf(stderr,"LWL: Unreachable case in alignment switch!\n");
+             merged_value = current_rt_value; // Keep old value on error?
+             break;
+    }
+
+    // Schedule the merged value for the load delay slot
+    cpu->load_reg_idx = rt;
+    cpu->load_value = merged_value;
+
+    printf("Executed LWL: R%u <- M[R%u + %d @ 0x%08x], AlignedWord=0x%08x => Merged=0x%08x (Delayed)\n",
+           rt, rs, (int16_t)offset, addr, aligned_word, merged_value);
+}
+
+// LWR: Load Word Right (Little-Endian) (Opcode 0b100110 = 0x26)
+// Loads the LSBs of a potentially unaligned word into the LSBs of rt.
+// Based on Section 2.99.2
+void op_lwr(Cpu* cpu, uint32_t instruction) {
+    // Check cache isolation
+    if ((cpu->sr & 0x10000) != 0) {
+        printf("Executed LWR: Ignored (Cache Isolated, SR=0x%08x)\n", cpu->sr);
+        return;
+    }
+
+    uint32_t offset = instr_imm_se(instruction);
+    uint32_t rt = instr_t(instruction); // Target register index
+    uint32_t rs = instr_s(instruction); // Base address register index
+
+    uint32_t addr = cpu_reg(cpu, rs) + offset;
+
+    // Load delay bypass logic (same as LWL)
+    uint32_t current_rt_value;
+    if (cpu->load_reg_idx == rt) {
+        current_rt_value = cpu->load_value;
+         printf("LWR: Using pending load value (0x%08x) for R%u\n", current_rt_value, rt);
+    } else {
+        current_rt_value = cpu->out_regs[rt];
+         printf("LWR: Using out_regs value (0x%08x) for R%u\n", current_rt_value, rt);
+    }
+
+    // Load the *aligned* word containing the address
+    uint32_t aligned_addr = addr & ~3;
+    uint32_t aligned_word = cpu_load32(cpu, aligned_addr);
+
+    uint32_t merged_value;
+
+    // Merge based on address alignment (Little Endian)
+    switch (addr & 3) {
+        case 0: // Load bits 31..0 from aligned_word[0..3]
+            merged_value = (current_rt_value & 0x00000000) | (aligned_word >> 0);
+            break;
+        case 1: // Load bits 23..0 from aligned_word[1..3]
+            merged_value = (current_rt_value & 0xFF000000) | (aligned_word >> 8);
+            break;
+        case 2: // Load bits 15..0 from aligned_word[2..3]
+            merged_value = (current_rt_value & 0xFFFF0000) | (aligned_word >> 16);
+            break;
+        case 3: // Load bits 7..0 from aligned_word[3]
+            merged_value = (current_rt_value & 0xFFFFFF00) | (aligned_word >> 24);
+            break;
+         default: // Should be unreachable
+             fprintf(stderr,"LWR: Unreachable case in alignment switch!\n");
+             merged_value = current_rt_value; // Keep old value on error?
+             break;
+    }
+
+    // Schedule the merged value for the load delay slot
+    cpu->load_reg_idx = rt;
+    cpu->load_value = merged_value;
+
+    printf("Executed LWR: R%u <- M[R%u + %d @ 0x%08x], AlignedWord=0x%08x => Merged=0x%08x (Delayed)\n",
+           rt, rs, (int16_t)offset, addr, aligned_word, merged_value);
+}
+
+// SWL: Store Word Left (Little-Endian) (Opcode 0b101010 = 0x2A)
+// Stores the MSBs from rt into the LSBs of a potentially unaligned word in memory.
+// Based on Section 2.100.1
+void op_swl(Cpu* cpu, uint32_t instruction) {
+    // Check cache isolation
+    if ((cpu->sr & 0x10000) != 0) {
+        printf("Executed SWL: Ignored (Cache Isolated, SR=0x%08x)\n", cpu->sr);
+        return;
+    }
+
+    uint32_t offset = instr_imm_se(instruction);
+    uint32_t rt = instr_t(instruction); // Value to store is in rt
+    uint32_t rs = instr_s(instruction); // Base address is in rs
+
+    uint32_t addr = cpu_reg(cpu, rs) + offset;
+    uint32_t value_to_store = cpu_reg(cpu, rt);
+
+    // Read the *aligned* word containing the address
+    uint32_t aligned_addr = addr & ~3;
+    // Use load32 directly - bypassing debugger checks for internal read
+    uint32_t current_mem_word = interconnect_load32(cpu->inter, aligned_addr);
+
+    uint32_t modified_mem_word;
+
+    // Merge based on address alignment (Little Endian)
+    switch (addr & 3) {
+        case 0: // Store bits 31..24 from value_to_store into mem byte 0
+            modified_mem_word = (current_mem_word & 0xFFFFFF00) | (value_to_store >> 24);
+            break;
+        case 1: // Store bits 31..16 from value_to_store into mem bytes 0..1
+            modified_mem_word = (current_mem_word & 0xFFFF0000) | (value_to_store >> 16);
+            break;
+        case 2: // Store bits 31..8 from value_to_store into mem bytes 0..2
+            modified_mem_word = (current_mem_word & 0xFF000000) | (value_to_store >> 8);
+            break;
+        case 3: // Store bits 31..0 from value_to_store into mem bytes 0..3
+            modified_mem_word = (current_mem_word & 0x00000000) | (value_to_store >> 0);
+            break;
+        default: // Should be unreachable
+            fprintf(stderr,"SWL: Unreachable case in alignment switch!\n");
+            modified_mem_word = current_mem_word; // Keep old value on error?
+            break;
+    }
+
+    // Store the modified aligned word back to memory
+    // Use store32 directly - bypassing cache check for internal write
+    interconnect_store32(cpu->inter, aligned_addr, modified_mem_word);
+
+    printf("Executed SWL: M[R%u + %d @ 0x%08x] using R%u (0x%08x) => AlignedWrite(0x%08x @ 0x%08x)\n",
+           rs, (int16_t)offset, addr, rt, value_to_store, modified_mem_word, aligned_addr);
+}
+
+// SWR: Store Word Right (Little-Endian) (Opcode 0b101110 = 0x2E)
+// Stores the LSBs from rt into the MSBs of a potentially unaligned word in memory.
+// Based on Section 2.100.2
+void op_swr(Cpu* cpu, uint32_t instruction) {
+    // Check cache isolation
+    if ((cpu->sr & 0x10000) != 0) {
+        printf("Executed SWR: Ignored (Cache Isolated, SR=0x%08x)\n", cpu->sr);
+        return;
+    }
+
+    uint32_t offset = instr_imm_se(instruction);
+    uint32_t rt = instr_t(instruction); // Value to store is in rt
+    uint32_t rs = instr_s(instruction); // Base address is in rs
+
+    uint32_t addr = cpu_reg(cpu, rs) + offset;
+    uint32_t value_to_store = cpu_reg(cpu, rt);
+
+    // Read the *aligned* word containing the address
+    uint32_t aligned_addr = addr & ~3;
+    uint32_t current_mem_word = interconnect_load32(cpu->inter, aligned_addr);
+
+    uint32_t modified_mem_word;
+
+    // Merge based on address alignment (Little Endian)
+    switch (addr & 3) {
+        case 0: // Store bits 31..0 from value_to_store into mem bytes 0..3
+            modified_mem_word = (current_mem_word & 0x00000000) | (value_to_store << 0);
+            break;
+        case 1: // Store bits 23..0 from value_to_store into mem bytes 1..3
+            modified_mem_word = (current_mem_word & 0x000000FF) | (value_to_store << 8);
+            break;
+        case 2: // Store bits 15..0 from value_to_store into mem bytes 2..3
+            modified_mem_word = (current_mem_word & 0x0000FFFF) | (value_to_store << 16);
+            break;
+        case 3: // Store bits 7..0 from value_to_store into mem byte 3
+            modified_mem_word = (current_mem_word & 0x00FFFFFF) | (value_to_store << 24);
+            break;
+        default: // Should be unreachable
+            fprintf(stderr,"SWR: Unreachable case in alignment switch!\n");
+            modified_mem_word = current_mem_word; // Keep old value on error?
+            break;
+    }
+
+    // Store the modified aligned word back to memory
+    interconnect_store32(cpu->inter, aligned_addr, modified_mem_word);
+
+    printf("Executed SWR: M[R%u + %d @ 0x%08x] using R%u (0x%08x) => AlignedWrite(0x%08x @ 0x%08x)\n",
+           rs, (int16_t)offset, addr, rt, value_to_store, modified_mem_word, aligned_addr);
+}
+
+// LWC0: Load Word Coprocessor 0 (Opcode 0x30)
+// Not supported on PSX COP0. Triggers exception.
+// Based on Section 2.101.1
+void op_lwc0(Cpu* cpu, uint32_t instruction) {
+    printf("Unsupported LWC0 instruction: 0x%08x\n", instruction);
+    cpu_exception(cpu, EXCEPTION_COPROCESSOR_ERROR);
+}
+
+// LWC1: Load Word Coprocessor 1 (Opcode 0x31)
+// Not supported on PSX COP1. Triggers exception.
+// Based on Section 2.101.1
+void op_lwc1(Cpu* cpu, uint32_t instruction) {
+    printf("Unsupported LWC1 instruction: 0x%08x\n", instruction);
+    cpu_exception(cpu, EXCEPTION_COPROCESSOR_ERROR);
+}
+
+// LWC2: Load Word Coprocessor 2 (GTE) (Opcode 0x32)
+// GTE load. Implementation deferred. Panics for now.
+// Based on Section 2.101.1
+void op_lwc2(Cpu* cpu, uint32_t instruction) {
+    fprintf(stderr, "Unhandled GTE LWC2 instruction: 0x%08x at PC=0x%08x\n",
+            instruction, cpu->current_pc);
+    // Optionally trigger exception instead:
+    // cpu_exception(cpu, EXCEPTION_COPROCESSOR_ERROR);
+    exit(1); // Panic as per guide's suggestion
+}
+
+// LWC3: Load Word Coprocessor 3 (Opcode 0x33)
+// Not supported on PSX COP3. Triggers exception.
+// Based on Section 2.101.1
+void op_lwc3(Cpu* cpu, uint32_t instruction) {
+    printf("Unsupported LWC3 instruction: 0x%08x\n", instruction);
+    cpu_exception(cpu, EXCEPTION_COPROCESSOR_ERROR);
+}
+
+// SWC0: Store Word Coprocessor 0 (Opcode 0x38)
+// Not supported on PSX COP0. Triggers exception.
+// Based on Section 2.101.2
+void op_swc0(Cpu* cpu, uint32_t instruction) {
+    printf("Unsupported SWC0 instruction: 0x%08x\n", instruction);
+    cpu_exception(cpu, EXCEPTION_COPROCESSOR_ERROR);
+}
+
+// SWC1: Store Word Coprocessor 1 (Opcode 0x39)
+// Not supported on PSX COP1. Triggers exception.
+// Based on Section 2.101.2
+void op_swc1(Cpu* cpu, uint32_t instruction) {
+    printf("Unsupported SWC1 instruction: 0x%08x\n", instruction);
+    cpu_exception(cpu, EXCEPTION_COPROCESSOR_ERROR);
+}
+
+// SWC2: Store Word Coprocessor 2 (GTE) (Opcode 0x3A)
+// GTE store. Implementation deferred. Panics for now.
+// Based on Section 2.101.2
+void op_swc2(Cpu* cpu, uint32_t instruction) {
+    fprintf(stderr, "Unhandled GTE SWC2 instruction: 0x%08x at PC=0x%08x\n",
+            instruction, cpu->current_pc);
+    // Optionally trigger exception instead:
+    // cpu_exception(cpu, EXCEPTION_COPROCESSOR_ERROR);
+    exit(1); // Panic as per guide's suggestion
+}
+
+// SWC3: Store Word Coprocessor 3 (Opcode 0x3B)
+// Not supported on PSX COP3. Triggers exception.
+// Based on Section 2.101.2
+void op_swc3(Cpu* cpu, uint32_t instruction) {
+    printf("Unsupported SWC3 instruction: 0x%08x\n", instruction);
+    cpu_exception(cpu, EXCEPTION_COPROCESSOR_ERROR);
+}
+
+// Handles any unimplemented or invalid instruction opcode/subfunction
+// Triggers an Illegal Instruction Exception.
+// Based on Section 2.102
+void op_illegal(Cpu* cpu, uint32_t instruction) {
+    fprintf(stderr, "Illegal instruction encountered: 0x%08x at PC=0x%08x\n",
+            instruction, cpu->current_pc);
+    cpu_exception(cpu, EXCEPTION_ILLEGAL_INSTRUCTION);
+}
 // LBU: Load Byte Unsigned (Opcode 0b100100 = 0x24)
 // Loads an 8-bit byte from memory, zero-extends it to 32 bits,
 // and schedules the write to register 'rt' after the delay slot.
@@ -950,6 +1637,9 @@ void op_jalr(Cpu* cpu, uint32_t instruction) {
     // This performs the jump.
     cpu->next_pc = target_address;
 
+    // ---> SET BRANCH FLAG <---
+    cpu->branch_taken = true;
+
     printf("Executed JALR: R%u = 0x%08x, Jump to R%u (0x%08x). Branch delay slot. Next PC set to 0x%08x\n",
            rd, return_addr, rs, target_address, target_address);
 }
@@ -1001,6 +1691,11 @@ void op_bxx(Cpu* cpu, uint32_t instruction) {
         }
         // Schedule the branch
         cpu_branch(cpu, imm_se);
+
+        // ---> SET BRANCH FLAG <---
+        cpu->branch_taken = true;
+        // ------------------------
+
     } else {
         printf("Executed %s: R%u (%d) condition not met, Branch not taken.\n",
                name, rs, rs_value);
@@ -1203,6 +1898,26 @@ void op_sltiu(Cpu* cpu, uint32_t instruction) {
            rt, rs, rs_value, imm_se, result);
 }
 
+// Based on Section 2.75
+void op_rfe(Cpu* cpu, uint32_t instruction) {
+    // MIPS I RFE instruction checks the lower 6 bits are 0b010000. [cite: 913, 923]
+    if ((instruction & 0x3f) != 0b010000) {
+        fprintf(stderr, "Invalid RFE instruction format: 0x%08x\n", instruction);
+        // Handle as an illegal instruction or reserved instruction exception?
+        // Guide doesn't specify, let's trigger illegal for now.
+        cpu_exception(cpu, EXCEPTION_ILLEGAL_INSTRUCTION);
+        return;
+    }
+
+    // Restore the previous interrupt mask and user/kernel mode bits.
+    // Shift bits [5:2] of the status register right by two positions.
+    uint32_t mode = cpu->sr & 0x3f;     // Get bottom 6 bits
+    cpu->sr &= ~0xf;                    // Clear bits [3:0]
+    cpu->sr |= (mode >> 2);             // Shift stack right (pop) and insert [cite: 928]
+
+    printf("Executed RFE: Restored SR mode bits. SR = 0x%08x\n", cpu->sr);
+}
+
 // DIVU: Divide Unsigned (Opcode 0x00, Subfunction 0x1b)
 // Divides rs by rt (unsigned). Stores quotient in LO, remainder in HI.
 // Handles division by zero.
@@ -1356,7 +2071,13 @@ void decode_and_execute(Cpu* cpu, uint32_t instruction) {
             break;
         case 0b001011: // Opcode 0x0B: SLTIU <-- Add this case
             op_sltiu(cpu, instruction);
-            break;    
+            break; 
+        case 0b101010: // Opcode 0x2A: SWL <-- ADD THIS CASE
+            op_swl(cpu, instruction);
+            break;
+            case 0b101110: // Opcode 0x2E: SWR <-- ADD THIS CASE
+            op_swr(cpu, instruction);
+            break;           
    
             
         // --- I-Type Instructions (and others identified by primary opcode) ---
@@ -1380,6 +2101,18 @@ void decode_and_execute(Cpu* cpu, uint32_t instruction) {
         case 0b100000: // Opcode 0x20: LB  <-- Add this case
              op_lb(cpu, instruction);
              break;
+        case 0b100001: // Opcode 0x21: LH <-- ADD THIS CASE
+             op_lh(cpu, instruction);     
+             break;
+        case 0b100010: // Opcode 0x22: LWL <-- ADD THIS CASE
+             op_lwl(cpu, instruction);
+             break;    
+        case 0b100110: // Opcode 0x26: LWR <-- ADD THIS CASE
+             op_lwr(cpu, instruction);
+             break;      
+        case 0b100101: // Opcode 0x25: LHU <-- ADD THIS CASE
+             op_lhu(cpu, instruction);
+             break;     
         case 0b101011: // 0x2B: SW <-- ADD THIS CASE
             op_sw(cpu, instruction);
             break;    
@@ -1393,6 +2126,15 @@ void decode_and_execute(Cpu* cpu, uint32_t instruction) {
         case 0b010000: // 0x10: COP0 <-- ADD THIS CASE
             op_cop0(cpu, instruction);
             break;
+        case 0b010001: // Opcode 0x11: COP1 <-- ADD THIS CASE
+            op_cop1(cpu, instruction);
+            break;
+        case 0b010010: // Opcode 0x12: COP2 (GTE) <-- ADD THIS CASE
+            op_cop2(cpu, instruction);
+            break;
+        case 0b010011: // Opcode 0x13: COP3 <-- ADD THIS CASE
+            op_cop3(cpu, instruction);
+            break;    
         
         case 0b001000: //0x08: ADDI
             op_addi(cpu,instruction);
@@ -1400,7 +2142,37 @@ void decode_and_execute(Cpu* cpu, uint32_t instruction) {
 
         case 0b001001: // 0x9: ADDIU  <-- ADD THIS CASE
             op_addiu(cpu, instruction);
-            break;    
+            break;
+        case 0b001110: // Opcode 0x0E: XORI <-- ADD THIS CASE
+            op_xori(cpu, instruction);
+            break;
+        // --- LWCn Opcodes ---
+        case 0b110000: // Opcode 0x30: LWC0 <-- ADD
+            op_lwc0(cpu, instruction);
+            break;
+        case 0b110001: // Opcode 0x31: LWC1 <-- ADD
+            op_lwc1(cpu, instruction);
+            break;
+        case 0b110010: // Opcode 0x32: LWC2 (GTE) <-- ADD
+            op_lwc2(cpu, instruction);
+            break;
+        case 0b110011: // Opcode 0x33: LWC3 <-- ADD
+            op_lwc3(cpu, instruction);
+            break;
+
+        // --- SWCn Opcodes ---
+        case 0b111000: // Opcode 0x38: SWC0 <-- ADD
+            op_swc0(cpu, instruction);
+            break;
+        case 0b111001: // Opcode 0x39: SWC1 <-- ADD
+            op_swc1(cpu, instruction);
+            break;
+        case 0b111010: // Opcode 0x3A: SWC2 (GTE) <-- ADD
+            op_swc2(cpu, instruction);
+            break;
+        case 0b111011: // Opcode 0x3B: SWC3 <-- ADD
+            op_swc3(cpu, instruction);
+            break;            
         // Add cases for COP1(Exception), COP2(GTE), COP3(Exception) later
         
         // --- R-Type Instructions (identified by primary opcode 0x00) ---
@@ -1425,6 +2197,12 @@ void decode_and_execute(Cpu* cpu, uint32_t instruction) {
                     case 0b100111: // Subfunction 0x27: NOR <-- Add this case
                         op_nor(cpu, instruction);
                         break;
+                    case 0b000100: // Subfunction 0x04: SLLV <-- ADD THIS CASE
+                        op_sllv(cpu, instruction);
+                        break;
+                    case 0b001101: // Subfunction 0x0D: BREAK <-- ADD THIS CASE
+                        op_break(cpu, instruction);
+                        break;        
 
                     case 0b001000: // Subfunction 0x08: JR  <-- Aggiungi questo case
                         op_jr(cpu, instruction);
@@ -1443,14 +2221,32 @@ void decode_and_execute(Cpu* cpu, uint32_t instruction) {
                         break;    
                     case 0b010001: // Subfunction 0x11: MTHI <-- Add this case
                         op_mthi(cpu, instruction);
-                        break;    
-
+                        break;
+                    case 0b000111: // Subfunction 0x07: SRAV <-- ADD THIS CASE
+                        op_srav(cpu, instruction);
+                        break;
+                    case 0b000110: // Subfunction 0x06: SRLV <-- ADD THIS CASE
+                        op_srlv(cpu, instruction);
+                        break;
+                    case 0b011001: // Subfunction 0x19: MULTU <-- ADD THIS CASE
+                        op_multu(cpu, instruction);
+                        break; 
+                    case 0b011000: // Subfunction 0x18: MULT <-- ADD THIS CASE
+                        op_mult(cpu, instruction);
+                        break;
+    
+                    case 0b100110: // Subfunction 0x26: XOR <-- ADD THIS CASE
+                        op_xor(cpu, instruction);
+                        break;           
                     case 0b100001: //0x21: ADDU
                         op_addu(cpu,instruction);
                         break;
                     case 0b100000: // Subfunction 0x20: ADD <-- Add this case
                         op_add(cpu, instruction);
                         break;
+                    case 0b100010: // Subfunction 0x22: SUB <-- ADD THIS CASE
+                        op_sub(cpu, instruction);
+                        break;    
                     case 0b100011: // Subfunction 0x23: SUBU <-- Add this case
                         op_subu(cpu, instruction);
                         break;  
@@ -1473,22 +2269,15 @@ void decode_and_execute(Cpu* cpu, uint32_t instruction) {
                         op_sltu(cpu,instruction);
                         break;    
                     // Add cases for JR (0x8), OR (0x25), ADDU (0x21), etc. here
-                    default:
-                         fprintf(stderr, "Unhandled R-type instruction: PC=0x%08x, Inst=0x%08x, Subfunction=0x%02x\n",
-                                cpu->pc, // PC holds delay slot PC here
-                                instruction, subfunc);
-                        exit(1);
+                    default: // <-- MODIFY R-TYPE DEFAULT
+                    op_illegal(cpu, instruction);
+                    break;
                 }
             }
             break; // End of case 0b000000
-
-        // Add cases for ORI (0xD), ADDIU (0x9), J (0x2), SW (0x2B), LW (0x23), COP0 (0x10) etc. here
-
-        default:
-             fprintf(stderr, "Unhandled instruction: PC=0x%08x, Inst=0x%08x, Opcode=0x%02x\n",
-                    cpu->pc, // PC holds delay slot PC here
-                    instruction, opcode);
-            exit(1);
+            default: // <-- MODIFY MAIN DEFAULT
+            op_illegal(cpu, instruction);
+            break;
     }
 }
 
@@ -1534,8 +2323,12 @@ void cpu_init(Cpu* cpu, Interconnect* inter) {
     cpu->hi = 0xdeadbeef;
     cpu->lo = 0xdeadbeef;
 
-    printf("CPU Initialized. PC = 0x%08x, Next PC = 0x%08x, SR=0x%08x, LO=0x%08x, HI=0x%08x, CAUSE=0x%x, EPC=0x%x,GPRs initialized.\n",
-            cpu->pc, cpu->next_pc, cpu->sr);    
+    // ---> INITIALIZE NEW FLAGS <---
+    cpu->branch_taken = false;
+    cpu->in_delay_slot = false;
+
+    printf("CPU Initialized. PC = 0x%08x, Next PC = 0x%08x, SR=0x%08x, ... Flags Initialized.\n",
+        cpu->pc, cpu->next_pc, cpu->sr /* , ... other fields */);   
 
     // Print confirmation message.
     printf("CPU Initialized. PC = 0x%08x, Next PC = 0x%08x, GPRs initialized.\n", cpu->pc, cpu->next_pc);
@@ -1571,20 +2364,34 @@ void cpu_run_next_instruction(Cpu* cpu) {
     // 3. Fetch the instruction at that address.
     uint32_t instruction = cpu_load32(cpu, cpu->current_pc);
 
+    // ---> UPDATE DELAY SLOT FLAGS <---
+    // Update in_delay_slot based on whether the *previous* instruction took a branch
+    cpu->in_delay_slot = cpu->branch_taken;
+    // Reset branch_taken flag for the *current* instruction cycle
+    cpu->branch_taken = false;
+
     // 4. Prepare PC state for the *next* cycle (handles branch delay).
     // This happens *before* execution, so branches/jumps in decode_and_execute
     // will overwrite next_pc if needed.
     cpu->pc = cpu->next_pc;
     cpu->next_pc = cpu->pc + 4; // Default next instruction
 
-    // --- Commit State BEFORE Execute ---
+   // --- Commit State BEFORE Execute ---
+    // Apply pending load value from previous cycle *before* copying regs
+    // Note: We already did this at the top, but ensure the order is correct
+    // cpu_set_reg(cpu, cpu->load_reg_idx, cpu->load_value); // Redundant if done above
+    // cpu->load_reg_idx = REG_ZERO; // Redundant if done above
+
+    // Copy registers from previous cycle's output to current cycle's input
     memcpy(cpu->regs, cpu->out_regs, sizeof(cpu->regs));
-    cpu->regs[REG_ZERO] = 0; // Ensure R0 remains 0 after copy
+    cpu->regs[REG_ZERO] = 0; // Ensure R0 remains 0
 
     // --- Decode and Execute Current Instruction ---
+    // The branch/jump instructions inside decode_and_execute will now set cpu->branch_taken = true if they branch
     decode_and_execute(cpu, instruction);
 
     // --- Safety net for R0 ---
+    // Ensure R0 in the output set is always 0 for the *next* cycle
     cpu->out_regs[REG_ZERO] = 0;
 }
 
@@ -1617,17 +2424,26 @@ void cpu_exception(Cpu* cpu, ExceptionCause cause) {
     // cpu->cause &= ~(1 << 31); // Clear Branch Delay (BD) bit initially
     cpu->cause |= ((uint32_t)cause << 2); // Set the exception code
 
-    // Update EPC (Exception PC)
-    // Save the address of the instruction that caused the exception.
-    // For now, use current_pc. Need refinement for delay slots (Section 2.76).
-    cpu->epc = cpu->current_pc; //
-    // If exception is in branch delay slot (check a flag set by branch/jump):
-    // {
-    //    cpu->epc = cpu->current_pc - 4;
-    //    cpu->cause |= (1 << 31); // Set BD bit in Cause
-    // }
+   // ---> MODIFY CAUSE/EPC HANDLING <---
+    // Update Cause Register with exception code (bits 6:2)
+    cpu->cause = (uint32_t)cause << 2; // Set the exception code first
+
+    // Update EPC (Exception PC) and Cause BD bit based on delay slot
+    if (cpu->in_delay_slot) {
+        // Exception occurred in a branch delay slot
+        cpu->epc = cpu->current_pc - 4; // EPC points to the branch instruction
+        cpu->cause |= (1 << 31);        // Set the Branch Delay (BD) bit
+        printf("    Exception in delay slot: EPC=0x%08x, CAUSE=0x%08x\n", cpu->epc, cpu->cause);
+    } else {
+        // Exception occurred in a normal instruction
+        cpu->epc = cpu->current_pc;     // EPC points to the faulting instruction
+        // Ensure BD bit is clear (optional, but good practice if CAUSE wasn't fully cleared before)
+        // cpu->cause &= ~(1 << 31); // Uncomment if CAUSE wasn't cleared before setting ExcCode
+        printf("    Exception not in delay slot: EPC=0x%08x, CAUSE=0x%08x\n", cpu->epc, cpu->cause);
+    }
+    // ----------------------------------
 
     // Jump to the exception handler (no delay slot)
     cpu->pc = handler_addr;
-    cpu->next_pc = cpu->pc + 4;
+    cpu->next_pc = cpu->pc + 4; // Use wrapping add if necessary
 }
