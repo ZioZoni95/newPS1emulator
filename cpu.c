@@ -745,6 +745,41 @@ void op_sb(Cpu* cpu, uint32_t instruction) {
            rs, (int16_t)offset, offset, rt, (uint8_t)value_to_store, address);
 }
 
+// MTLO: Move To LO (Opcode 0x00, Subfunction 0x13)
+// Copies the value from GPR 'rs' into the special LO register.
+// Based on Section 2.73
+void op_mtlo(Cpu* cpu, uint32_t instruction) {
+    // Extract the source register index (rs).
+    uint32_t rs = instr_s(instruction);
+
+    // Read the value from the source register rs.
+    uint32_t rs_value = cpu_reg(cpu, rs);
+
+    // Write the value into the LO register.
+    cpu->lo = rs_value;
+
+    // Debug print.
+    printf("Executed MTLO: LO = R%u (0x%08x)\n", rs, rs_value);
+}
+
+// MTHI: Move To HI (Opcode 0x00, Subfunction 0x11)
+// Copies the value from GPR 'rs' into the special HI register.
+// Based on Section 2.74
+void op_mthi(Cpu* cpu, uint32_t instruction) {
+    // Extract the source register index (rs).
+    uint32_t rs = instr_s(instruction);
+
+    // Read the value from the source register rs.
+    uint32_t rs_value = cpu_reg(cpu, rs);
+
+    // Write the value into the HI register.
+    cpu->hi = rs_value;
+
+    // Debug print.
+    printf("Executed MTHI: HI = R%u (0x%08x)\n", rs, rs_value);
+}
+
+
 // LB: Load Byte (Signed) (Opcode 0b100000 = 0x20)
 // Loads an 8-bit byte from memory, sign-extends it to 32 bits,
 // and schedules the write to register 'rt' after the delay slot.
@@ -1402,6 +1437,12 @@ void decode_and_execute(Cpu* cpu, uint32_t instruction) {
                         break;
                     case 0b010000: // Subfunction 0x10: MFHI <-- Add this case
                         op_mfhi(cpu, instruction);
+                        break; 
+                    case 0b010011: // Subfunction 0x13: MTLO <-- Add this case
+                        op_mtlo(cpu, instruction);
+                        break;    
+                    case 0b010001: // Subfunction 0x11: MTHI <-- Add this case
+                        op_mthi(cpu, instruction);
                         break;    
 
                     case 0b100001: //0x21: ADDU

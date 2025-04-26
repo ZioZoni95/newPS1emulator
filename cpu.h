@@ -172,7 +172,8 @@ void op_slt(Cpu* cpu, uint32_t instruction); // <-- Add this line
 void op_mfhi(Cpu* cpu, uint32_t instruction); // <-- Add this line
 void op_syscall(Cpu* cpu, uint32_t instruction); // <-- Add this line
 void op_nor(Cpu* cpu, uint32_t instruction); // <-- Add this line
-
+void op_mtlo(Cpu* cpu, uint32_t instruction); // <-- Add this line
+void op_mthi(Cpu* cpu, uint32_t instruction); // <-- Add this line
 
 
 // Memory Access via CPU (delegates to Interconnect)
