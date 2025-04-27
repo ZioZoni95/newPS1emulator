@@ -31,7 +31,7 @@ typedef enum {
 
 // --- CPU State Structure ---
 // Defines the internal state of the emulated MIPS R3000A-compatible CPU.
-typedef struct {
+typedef struct Cpu {
     // --- Core Registers ---
     uint32_t pc;            // Program Counter: Address of the instruction currently being fetched.
     uint32_t next_pc;       // Address of the instruction *after* the delay slot (used for branch delay).
