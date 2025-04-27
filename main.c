@@ -28,7 +28,7 @@
      const char* bios_path = (argc > 1) ? argv[1] : "roms/SCPH1001.BIN"; // Default path
      const uint32_t cycles_per_frame = 300000; // Arbitrary number of CPU cycles per frame loop iteration
  
-     printf("--- myPS1 Emulator Starting ---\n");
+     printf("--- ZoniStation One Emulator ---\n");
      printf("Attempting to load BIOS from: %s\n", bios_path);
  
      // --- SDL & OpenGL Initialization ---
@@ -44,7 +44,8 @@
      SDL_GL_SetAttribute(SDL_GL_CONTEXT_MAJOR_VERSION, 3);
      SDL_GL_SetAttribute(SDL_GL_CONTEXT_MINOR_VERSION, 3);
      // SDL_GL_SetAttribute(SDL_GL_STENCIL_SIZE, 8); // Might be needed for some effects later
- 
+     SDL_Delay(2000); // Pause for 5000 milliseconds
+
      printf("Creating SDL Window (1024x512, OpenGL)...\n");
      SDL_Window* window = SDL_CreateWindow(
          "myPS1 Emulator",               // Window title
@@ -60,6 +61,8 @@
          SDL_Quit();
          return 1;
      }
+     SDL_Delay(2000); // Pause for 5000 milliseconds
+
  
      printf("Creating OpenGL Context...\n");
      SDL_GLContext gl_context = SDL_GL_CreateContext(window);
@@ -69,6 +72,8 @@
          SDL_Quit();
          return 1;
      }
+     SDL_Delay(5000); // Pause for 5000 milliseconds
+
  
      // Initialize GLEW (or GLAD) - MUST be done *after* creating the GL context
      printf("Initializing GLEW...\n");
@@ -84,7 +89,8 @@
      printf("GLEW Initialized.\n");
      printf("OpenGL Version Detected: %s\n", glGetString(GL_VERSION));
      check_gl_error("After GLEW Init"); // Check for errors after init
- 
+     SDL_Delay(3000); // Pause for 5000 milliseconds
+
  
      // --- Emulator Component Initialization ---
      printf("Initializing Emulator Components...\n");
@@ -128,8 +134,11 @@
      // 5. Initialize CPU (Pass the fully initialized Interconnect)
      printf("  Initializing CPU...\n");
      cpu_init(&cpu_state, &interconnect_state); //
- 
+     SDL_Delay(3000); // Pause for 5000 milliseconds
+
      printf("All Emulator Components Initialized.\n");
+     SDL_Delay(1000); // Pause for 5000 milliseconds
+
  
      // --- Main Emulation Loop ---
      printf("Starting Emulation Loop...\n");
