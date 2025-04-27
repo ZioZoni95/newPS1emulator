@@ -1,106 +1,128 @@
-#ifndef INTERCONNECT_H // Include guard: Prevents defining things multiple times
+#ifndef INTERCONNECT_H // Include guard
 #define INTERCONNECT_H
 
-#include <stdint.h>       // Standard header for fixed-width integer types like uint32_t
-#include "bios.h"         // Needs the definition of the Bios struct for the pointer below
-#include "ram.h"          // <-- Added include for Ram struct definition
+#include <stdint.h>       // For uint32_t, uint16_t etc.
+#include <stdbool.h>      // For bool type
+
+// Include headers for components accessed via the interconnect
+#include "bios.h"
+#include "ram.h"
+#include "dma.h"
+#include "gpu.h"
 
 /* --- Memory Map Definitions (Physical Addresses) ---
- * These definitions represent the physical address ranges for various
- * components mapped into the PlayStation's memory space.
- * The interconnect uses these physical addresses after mapping
- * the CPU's virtual addresses (KUSEG/KSEG0/KSEG1).
- * References primarily based on the guide's memory map tables and sections.
+ * These define the physical address ranges used by the interconnect
+ * after mapping the CPU's virtual address.
  */
 
-// Main RAM (2 Megabytes) (Guide §2.5, §2.34) [cite: 84, 459]
+// Main RAM (2 Megabytes)
 #define RAM_START 0x00000000
 #define RAM_SIZE  (2 * 1024 * 1024)
 #define RAM_END   (RAM_START + RAM_SIZE - 1)
 
-// BIOS ROM (512 Kilobytes) (Guide §2.5, §2.6) [cite: 84, 102]
+// BIOS ROM (512 Kilobytes)
 #define BIOS_START 0x1fc00000 // Physical start address
 #define BIOS_SIZE  (512 * 1024)
 #define BIOS_END   (BIOS_START + BIOS_SIZE - 1)
 
-// Memory Control Region (Guide §2.16.2, §2.53, §2.21) [cite: 258, 623, 304]
-// Contains Expansion Base Address registers, RAM_SIZE register, Interrupt Control, etc.
-#define MEM_CONTROL_START 0x1f801000
-// Guide mentions registers up to 0x1f801020 (RAM_SIZE), 0x1f801070/74 (IRQ).
-// Let's use a slightly larger range for safety, covering known registers.
-// Nocash indicates IO ports up to 0x1f801074+. A size of 0x80 covers this.
-#define MEM_CONTROL_SIZE  0x80 // Size covering known registers up to IRQ mask+4
-#define MEM_CONTROL_END   (MEM_CONTROL_START + MEM_CONTROL_SIZE - 1)
-// Specific registers within this range:
-#define EXPANSION_1_BASE_ADDR 0x1f801000 // [cite: 258]
-#define EXPANSION_2_BASE_ADDR 0x1f801004 // [cite: 258]
-#define RAM_SIZE_ADDR         0x1f801060 // [cite: 304]
-#define IRQ_STATUS_ADDR       0x1f801070 // [cite: 628]
-#define IRQ_MASK_ADDR         0x1f801074 // [cite: 623]
-
-// Scratchpad (1 Kilobyte Data Cache RAM) (Guide §2.5, §2.38) [cite: 84, 501]
+// Scratchpad (1 Kilobyte Data Cache RAM)
 #define SCRATCHPAD_START 0x1f800000
 #define SCRATCHPAD_SIZE  1024
 #define SCRATCHPAD_END   (SCRATCHPAD_START + SCRATCHPAD_SIZE - 1)
 
-// Hardware Registers (General I/O Ports, Timers, SPU, PIO, SIO etc.) (Guide §2.5) [cite: 84]
-// This is a broad range containing many different peripherals.
-#define HW_REGS_START 0x1f801000 // Note: Overlaps MEM_CONTROL, SPU, TIMERS etc.
-#define HW_REGS_END   0x1f802FFF // Approximate end covering known standard registers
+// Memory Control Registers (Expansion Base, RAM Size)
+#define MEM_CONTROL_START 0x1f801000
+#define MEM_CONTROL_SIZE  0x80 // Covers known registers up to IRQ mask+4
+#define MEM_CONTROL_END   (MEM_CONTROL_START + MEM_CONTROL_SIZE - 1)
+#define EXPANSION_1_BASE_ADDR 0x1f801000
+#define EXPANSION_2_BASE_ADDR 0x1f801004
+#define RAM_SIZE_ADDR         0x1f801060
 
-// SPU (Sound Processing Unit) Register Range (Guide §2.40) [cite: 529]
-#define SPU_START 0x1f801C00
-#define SPU_SIZE  640 // From Nocash specs
-#define SPU_END   (SPU_START + SPU_SIZE - 1)
+// Interrupt Control Registers (I_STAT, I_MASK)
+#define IRQ_REGS_START        0x1f801070
+#define IRQ_STATUS_ADDR       0x1f801070 // Read: Pending IRQs / Write: Acknowledge IRQs
+#define IRQ_MASK_ADDR         0x1f801074 // Read/Write: Enable/Disable IRQ lines
+#define IRQ_REGS_END          (IRQ_REGS_START + 8 - 1) // Covers I_STAT and I_MASK
 
-// Expansion Region 1 (Parallel Port on early models) (Guide §2.5, §2.48) [cite: 84, 571]
-#define EXPANSION_1_START 0x1f000000
-#define EXPANSION_1_SIZE  (8 * 1024 * 1024) // 8MB, though often unused/smaller devices
-#define EXPANSION_1_END   (EXPANSION_1_START + EXPANSION_1_SIZE - 1)
+// DMA Registers
+#define DMA_START 0x1f801080
+#define DMA_SIZE  0x80 // Covers common registers and 7 channels
+#define DMA_END   (DMA_START + DMA_SIZE - 1)
 
-// Expansion Region 2 (Used for Development Hardware/Debugging) (Guide §2.44) [cite: 547]
-#define EXPANSION_2_START 0x1f802000
-#define EXPANSION_2_SIZE  66 // From guide
-#define EXPANSION_2_END   (EXPANSION_2_START + EXPANSION_2_SIZE - 1)
-
-// Timer Registers (Guide §2.70, §2.91) [cite: 803, 1180]
+// Timer Registers
 #define TIMERS_START 0x1f801100
 #define TIMERS_SIZE  0x30 // Covers Timers 0, 1, 2
 #define TIMERS_END   (TIMERS_START + TIMERS_SIZE - 1)
 
-// DMA Registers (Guide §2.81, Section 3) [cite: 1018, 1479]
-#define DMA_START 0x1f801080
-#define DMA_SIZE  0x80 // Covers common registers DPCR, DICR, and 7 channels
-#define DMA_END   (DMA_START + DMA_SIZE - 1)
+// SPU (Sound Processing Unit) Registers
+#define SPU_START 0x1f801C00
+#define SPU_SIZE  640 // From Nocash specs
+#define SPU_END   (SPU_START + SPU_SIZE - 1)
 
-// GPU Registers (GP0, GP1/GPUSTAT) (Guide §2.89, Section 4) [cite: 1136, 1835]
+// GPU Registers (GP0, GP1/GPUSTAT)
 #define GPU_START 0x1f801810
-#define GPU_SIZE  8 // GP0 (0x1810) and GP1/GPUSTAT (0x1814)
+#define GPU_SIZE  8 // GP0/GPUREAD (0x1810) and GP1/GPUSTAT (0x1814)
 #define GPU_END   (GPU_START + GPU_SIZE - 1)
+#define GPU_GP0_ADDR     0x1f801810 // Write address for GP0 commands
+#define GPU_GPUREAD_ADDR 0x1f801810 // Read address for GPUREAD fifo
+#define GPU_GP1_ADDR     0x1f801814 // Write address for GP1 commands
+#define GPU_GPUSTAT_ADDR 0x1f801814 // Read address for GPUSTAT register
 
-// Cache Control Register (KSEG2) (Guide §2.26) [cite: 366]
+// Expansion Region 1 (Parallel Port)
+#define EXPANSION_1_START 0x1f000000
+#define EXPANSION_1_SIZE  (8 * 1024 * 1024)
+#define EXPANSION_1_END   (EXPANSION_1_START + EXPANSION_1_SIZE - 1)
+
+// Expansion Region 2 (Debug/Dev Hardware)
+#define EXPANSION_2_START 0x1f802000
+#define EXPANSION_2_SIZE  66
+#define EXPANSION_2_END   (EXPANSION_2_START + EXPANSION_2_SIZE - 1)
+
+// Cache Control Register (KSEG2)
 #define CACHE_CONTROL_ADDR 0xfffe0130
+
+/* --- Interrupt Line Definitions ---
+ * Defines symbolic names for the PSX hardware interrupt request lines (0-10).
+ * These correspond to bits in the I_STAT and I_MASK registers.
+ */
+#define IRQ_VBLANK    0  // GPU VBlank interrupt
+#define IRQ_GPU       1  // GPU interrupt (origin depends on GPU config)
+#define IRQ_CDROM     2  // CD-ROM controller interrupt
+#define IRQ_DMA       3  // DMA controller interrupt
+#define IRQ_TIMER0    4  // Timer 0 interrupt
+#define IRQ_TIMER1    5  // Timer 1 interrupt
+#define IRQ_TIMER2    6  // Timer 2 interrupt
+#define IRQ_CTRLMEMCARD 7 // Controller and Memory Card interrupt
+#define IRQ_SIO       8  // Serial I/O interrupt (SIO0/SIO1)
+#define IRQ_SPU       9  // Sound Processing Unit interrupt
+#define IRQ_PIO      10 // PIO (Controller?) interrupt (Lightpen?)
 
 
 /* --- Interconnect Structure Definition ---
- * Holds pointers to all the main components of the emulated system
- * that are connected via the memory bus (BIOS, RAM, GPU, DMA, etc.).
- * The Interconnect module uses these pointers to route memory accesses
- * requested by the CPU to the appropriate component.
+ * Holds pointers/instances of all main system components accessed via the bus.
+ * Routes memory accesses from the CPU to the correct component.
  */
 typedef struct {
-    Bios* bios; // Pointer to the loaded BIOS data structure.
-    Ram* ram;   // <-- Pointer to the RAM data structure
-    // Gpu* gpu;        // To be added
-    // Dma* dma;        // To be added
-    // ... pointers to SPU, Timers, CDROM, Controllers etc. ...
+    Bios* bios; // Pointer to the loaded BIOS data
+    Ram* ram;   // Pointer to the main RAM data buffer
+    Gpu gpu;    // GPU state (embedded directly)
+    Dma dma;    // DMA controller state (embedded directly)
+
+    // --- Interrupt Controller State ---
+    uint16_t irq_status; // I_STAT Register state (reflects pending IRQs)
+    uint16_t irq_mask;   // I_MASK Register state (enables/disables IRQs)
+    // --------------------------------
+
+    // Add pointers/state for other peripherals here later (Timers, SPU, CDROM, etc.)
+
 } Interconnect;
 
 /* --- Function Declarations (Prototypes) --- */
 
 /**
  * @brief Initializes the Interconnect structure.
- * Stores pointers to the BIOS and RAM components.
+ * Stores pointers to BIOS/RAM, initializes embedded peripherals (GPU, DMA),
+ * and resets interrupt controller state.
  * @param inter Pointer to the Interconnect struct to initialize.
  * @param bios Pointer to the initialized Bios struct.
  * @param ram Pointer to the initialized Ram struct.
@@ -108,40 +130,43 @@ typedef struct {
 void interconnect_init(Interconnect* inter, Bios* bios, Ram* ram);
 
 /**
+ * @brief Maps a CPU virtual address (KUSEG/KSEG0/KSEG1) to a physical address.
+ * Based on Guide Section 2.38.
+ * @param addr The 32-bit virtual address from the CPU.
+ * @return The corresponding 32-bit physical address.
+ */
+uint32_t mask_region(uint32_t addr);
+
+/**
  * @brief Reads a 32-bit word from the emulated system memory space.
- * Handles address mapping (virtual to physical) and routes the read
- * request to the appropriate component (BIOS, RAM, Hardware Registers).
- * Checks for alignment errors.
+ * Handles address mapping, routes the read, checks alignment.
  * @param inter Pointer to the Interconnect instance.
  * @param address The 32-bit virtual address requested by the CPU.
- * @return The 32-bit value read from the specified address. Returns 0 on unhandled reads or alignment errors for now.
+ * @return The 32-bit value read. Returns 0 on unhandled/error cases for now.
  */
 uint32_t interconnect_load32(Interconnect* inter, uint32_t address);
 
 /**
  * @brief Reads a 16-bit halfword from the emulated system memory space.
- * Handles address mapping and routes the read to the appropriate component.
- * Checks for alignment errors.
+ * Handles address mapping, routes the read, checks alignment.
  * @param inter Pointer to the Interconnect instance.
  * @param address The 32-bit virtual address requested by the CPU.
- * @return The 16-bit value read from the specified address. Returns 0 on unhandled reads or alignment errors for now.
+ * @return The 16-bit value read. Returns 0 on unhandled/error cases for now.
  */
-uint16_t interconnect_load16(Interconnect* inter, uint32_t address); // <-- Added prototype
+uint16_t interconnect_load16(Interconnect* inter, uint32_t address);
 
 /**
  * @brief Reads an 8-bit byte from the emulated system memory space.
- * Handles address mapping and routes the read to the appropriate component.
+ * Handles address mapping and routes the read.
  * @param inter Pointer to the Interconnect instance.
  * @param address The 32-bit virtual address requested by the CPU.
- * @return The 8-bit value read from the specified address. Returns 0 on unhandled reads for now.
+ * @return The 8-bit value read. Returns 0 on unhandled reads for now.
  */
-uint8_t interconnect_load8(Interconnect* inter, uint32_t address); // <-- Added prototype
+uint8_t interconnect_load8(Interconnect* inter, uint32_t address);
 
 /**
  * @brief Writes a 32-bit word to the emulated system memory space.
- * Handles address mapping and routes the write request to the appropriate
- * component (RAM, Hardware Registers). Writes to BIOS are ignored.
- * Checks for alignment errors.
+ * Handles address mapping, routes the write, checks alignment.
  * @param inter Pointer to the Interconnect instance.
  * @param address The 32-bit virtual address targeted by the CPU.
  * @param value The 32-bit value to write.
@@ -150,8 +175,7 @@ void interconnect_store32(Interconnect* inter, uint32_t address, uint32_t value)
 
 /**
  * @brief Writes a 16-bit halfword to the emulated system memory space.
- * Handles address mapping and routes the write request.
- * Checks for alignment errors.
+ * Handles address mapping, routes the write, checks alignment.
  * @param inter Pointer to the Interconnect instance.
  * @param address The 32-bit virtual address targeted by the CPU.
  * @param value The 16-bit value to write.
@@ -160,22 +184,20 @@ void interconnect_store16(Interconnect* inter, uint32_t address, uint16_t value)
 
 /**
  * @brief Writes an 8-bit byte to the emulated system memory space.
- * Handles address mapping and routes the write request.
+ * Handles address mapping and routes the write.
  * @param inter Pointer to the Interconnect instance.
  * @param address The 32-bit virtual address targeted by the CPU.
  * @param value The 8-bit value to write.
  */
 void interconnect_store8(Interconnect* inter, uint32_t address, uint8_t value);
 
-
 /**
- * @brief Maps a CPU virtual address (KUSEG/KSEG0/KSEG1) to a physical address.
- * KSEG2 addresses are passed through unchanged.
- * Based on Guide Section 2.38.
- * @param addr The 32-bit virtual address from the CPU.
- * @return The corresponding 32-bit physical address.
+ * @brief Called by peripherals to signal an interrupt request.
+ * Sets the corresponding bit in the I_STAT register.
+ * @param inter Pointer to the Interconnect instance.
+ * @param irq_line The interrupt line number (0-10) to request.
  */
-uint32_t mask_region(uint32_t addr);
+void interconnect_request_irq(Interconnect* inter, uint32_t irq_line);
 
 
 #endif // INTERCONNECT_H

@@ -1,215 +1,224 @@
-#ifndef CPU_H       // Include guard: Prevents multiple inclusions of this header
+#ifndef CPU_H
 #define CPU_H
 
-#include <stdbool.h> // <-- Include this for bool type
-#include <stdint.h>       // Standard header for fixed-width integer types like uint32_t
-#include "interconnect.h" // We need the definition of the Interconnect struct
+#include <stdbool.h> // For bool type
+#include <stdint.h>  // For uint32_t, int32_t etc.
+#include "interconnect.h" // Needs definition of Interconnect for the pointer member
 
 // Define Register Index type for clarity (can just be uint32_t if preferred)
+// Using a distinct type can help prevent mixing indices and values, though not strictly enforced here.
 typedef uint32_t RegisterIndex;
-#define REG_ZERO ((RegisterIndex)0) // Represents $zero
+
+// Define constants for special register indices
+#define REG_ZERO ((RegisterIndex)0)  // $zero GPR, always 0
+#define REG_RA   ((RegisterIndex)31) // $ra GPR, Return Address for JAL/JALR
+
 
 // --- Exception Cause Codes ---
-// (Based on MIPS spec / Guide exception sections)
+// MIPS Exception codes used in the Cause register (bits 6:2)
+// Based on MIPS spec / Guide exception sections
 typedef enum {
-    EXCEPTION_INTERRUPT        = 0x00, // Interrupt
-    EXCEPTION_LOAD_ADDRESS_ERROR = 0x04, // Address error on load
-    EXCEPTION_STORE_ADDRESS_ERROR= 0x05, // Address error on store
-    EXCEPTION_SYSCALL          = 0x08, // System call instruction
-    EXCEPTION_BREAK            = 0x09, // Break instruction
-    EXCEPTION_ILLEGAL_INSTRUCTION= 0x0a, // Reserved/Illegal instruction
-    EXCEPTION_COPROCESSOR_ERROR= 0x0b, // Coprocessor Unusable
-    EXCEPTION_OVERFLOW         = 0x0c  // Arithmetic Overflow (ADD/ADDI/SUB)
+    EXCEPTION_INTERRUPT        = 0x00, // Hardware Interrupt requested (from I_STAT/I_MASK)
+    EXCEPTION_LOAD_ADDRESS_ERROR = 0x04, // Data Load/Instruction Fetch Address Error (Alignment or Bus Error)
+    EXCEPTION_STORE_ADDRESS_ERROR= 0x05, // Data Store Address Error (Alignment or Bus Error)
+    EXCEPTION_SYSCALL          = 0x08, // Syscall instruction executed
+    EXCEPTION_BREAK            = 0x09, // Break instruction executed
+    EXCEPTION_ILLEGAL_INSTRUCTION= 0x0a, // CPU encountered an undefined/illegal instruction
+    EXCEPTION_COPROCESSOR_ERROR= 0x0b, // Coprocessor Unusable (COP0/COP1/COP2/COP3 operation error)
+    EXCEPTION_OVERFLOW         = 0x0c  // Arithmetic Overflow (ADD/ADDI/SUB instructions)
 } ExceptionCause;
 
-// --- CPU Structure Definition ---
-// Defines the state of the MIPS R3000 CPU we are emulating.
-// Based on Guide Section 2.4, 2.13, 2.12
-typedef struct {
-    uint32_t pc;            // Program Counter register: Holds the address of the *next* instruction to fetch. [cite: 55, 56]
-    uint32_t regs[32];      // General Purpose Registers (GPRs): 32 registers used for general computations. [cite: 196, 218]
-    uint32_t out_regs[32];  // GPRs written by the *current* instruction (Output set)
-    uint32_t next_pc;   // Needed for branch delay slot emulation (Guide §2.71 / §2.23)
 
-    // --- Pending Load Delay Slot --- [Guide §2.32 / §2.33]
-    RegisterIndex load_reg_idx; // Target register index for the pending load.
+// --- CPU State Structure ---
+// Defines the internal state of the emulated MIPS R3000A-compatible CPU.
+typedef struct {
+    // --- Core Registers ---
+    uint32_t pc;            // Program Counter: Address of the instruction currently being fetched.
+    uint32_t next_pc;       // Address of the instruction *after* the delay slot (used for branch delay).
+    uint32_t current_pc;    // Address of the instruction currently executing (used for exception EPC).
+
+    // --- General Purpose Registers (GPRs) ---
+    uint32_t regs[32];      // Input register values for the current instruction. R0 is hardwired to 0.
+    uint32_t out_regs[32];  // Output register values written by the current instruction.
+
+    // --- Load Delay Slot ---
+    // MIPS I has a one-instruction delay after a load before the data is available.
+    RegisterIndex load_reg_idx; // Target register for the pending load.
     uint32_t load_value;        // Value to be loaded into the target register.
 
-    
-    Interconnect* inter;    // Pointer to the interconnect: How the CPU accesses memory (BIOS, RAM etc.). [cite: 165]
+    // --- HI/LO Registers ---
+    // Used for results of multiplication and division.
+    uint32_t hi;            // Remainder (division), High 32 bits (multiplication).
+    uint32_t lo;            // Quotient (division), Low 32 bits (multiplication).
 
-    // --- Coprocessor 0 Registers ---
-    uint32_t sr;            // Status Register (COP0 Reg 12)
-    uint32_t cause;         // Cause Register (COP0 Reg 13) <-- ADD
-    uint32_t epc; 
+    // --- Branch Delay Slot State ---
+    bool branch_taken;      // True if the current instruction caused a jump/branch.
+    bool in_delay_slot;     // True if the current instruction is executing in a branch delay slot.
 
-    // --- Future State Variables (Placeholders based on later Guide sections) ---
-    uint32_t current_pc;// Needed for precise exception EPC (Guide §2.71)
-    uint32_t hi, lo;    // HI/LO registers for multiplication/division results (Guide §2.12, §2.62) [cite: 211]
+    // --- Coprocessor 0 (System Control Coprocessor) Registers ---
+    uint32_t sr;            // COP0 Reg 12: Status Register (Interrupt enables, Cache isolation, etc.).
+    uint32_t cause;         // COP0 Reg 13: Cause Register (Exception code, pending interrupts, branch delay flag).
+    uint32_t epc;           // COP0 Reg 14: Exception Program Counter (Address of instruction causing exception).
+    // Note: Other COP0 registers (Breakpoint, DCIC, etc.) are not fully modeled yet.
 
-    // ---> ADD THESE TWO LINES <---
-    bool branch_taken;      // Set if the current instruction resulted in a branch
-    bool in_delay_slot;     // Set if the *next* instruction is in a delay slot
+    // --- Connection to Memory System ---
+    Interconnect* inter;    // Pointer to the interconnect module for memory accesses.
+
 } Cpu;
 
 
 // --- Helper Macros/Functions for Instruction Decoding ---
-// These helpers make it easier to extract specific bitfields from a 32-bit instruction word.
-// Based on Guide Section 2.10 and MIPS instruction formats.
+// Static inline functions for efficient extraction of instruction fields.
 
-// Extracts the 6-bit primary opcode (bits 31-26) [cite: 188]
-static inline uint32_t instr_function(uint32_t instruction) {
-    return instruction >> 26; // Right shift to get the top 6 bits
-}
-// Extracts the 'rs' register index (bits 25-21) - Source Register
-static inline uint32_t instr_s(uint32_t instruction) {
-    return (instruction >> 21) & 0x1F; // Shift and mask with 0b11111
-}
-// Extracts the 'rt' register index (bits 20-16) - Target Register (or second source) [cite: 188]
-static inline uint32_t instr_t(uint32_t instruction) {
-    return (instruction >> 16) & 0x1F; // Shift and mask
-}
-// Extracts the 'rd' register index (bits 15-11) - Destination Register [cite: 297]
-static inline uint32_t instr_d(uint32_t instruction) {
-    return (instruction >> 11) & 0x1F; // Shift and mask
-}
-// Extracts the 16-bit immediate value (bits 15-0) [cite: 189]
-static inline uint32_t instr_imm(uint32_t instruction) {
-    return instruction & 0xFFFF; // Mask bottom 16 bits
-}
-// Extracts the 16-bit immediate value, sign-extended to 32 bits (Guide §2.17) [cite: 281]
-static inline uint32_t instr_imm_se(uint32_t instruction) {
-    // Cast the lower 16 bits to a signed 16-bit integer
-    int16_t imm16 = (int16_t)(instruction & 0xFFFF);
-    // Cast to signed 32-bit (performs sign extension), then to unsigned 32-bit
-    return (uint32_t)(int32_t)imm16;
-}
-// Extracts the 5-bit shift amount (bits 10-6) for shift instructions [cite: 298]
-static inline uint32_t instr_shift(uint32_t instruction) {
-    return (instruction >> 6) & 0x1F; // Shift and mask
-}
-// Extracts the 6-bit subfunction code for R-type instructions (bits 5-0) [cite: 297]
-static inline uint32_t instr_subfunction(uint32_t instruction) {
-    return instruction & 0x3F; // Mask bottom 6 bits (0b111111)
-}
-// Extracts the 26-bit jump target address field (bits 25-0) for J-type instructions [cite: 322]
-static inline uint32_t instr_imm_jump(uint32_t instruction) {
-    return instruction & 0x03FFFFFF; // Mask bottom 26 bits
-}
+static inline uint32_t instr_function(uint32_t i) { return i >> 26; } // Opcode
+static inline uint32_t instr_s(uint32_t i) { return (i >> 21) & 0x1F; } // Reg rs
+static inline uint32_t instr_t(uint32_t i) { return (i >> 16) & 0x1F; } // Reg rt
+static inline uint32_t instr_d(uint32_t i) { return (i >> 11) & 0x1F; } // Reg rd
+static inline uint32_t instr_imm(uint32_t i) { return i & 0xFFFF; } // Imm (zero-extended)
+static inline uint32_t instr_imm_se(uint32_t i) { return (uint32_t)(int32_t)(int16_t)(i & 0xFFFF); } // Imm (sign-extended)
+static inline uint32_t instr_shift(uint32_t i) { return (i >> 6) & 0x1F; } // Shift amount
+static inline uint32_t instr_subfunction(uint32_t i) { return i & 0x3F; } // Sub-opcode (R-Type)
+static inline uint32_t instr_imm_jump(uint32_t i) { return i & 0x03FFFFFF; } // Jump target
+// Helper for COP0/COPz opcodes (uses 's' field bits)
+static inline uint32_t instr_cop_opcode(uint32_t i) { return (i >> 21) & 0x1F; }
 
 
 // --- Function Declarations (Prototypes) ---
 
-// Initializes the CPU state (PC, registers etc.) to their power-on/reset values.
-// Based on Guide Section 2.4.1 Reset value of the PC [cite: 81]
+/**
+ * @brief Initializes the CPU state to power-on defaults.
+ * Sets PC to BIOS entry, clears registers, sets initial COP0 state.
+ * @param cpu Pointer to the Cpu struct to initialize.
+ * @param inter Pointer to the initialized Interconnect struct.
+ */
 void cpu_init(Cpu* cpu, Interconnect* inter);
 
-// Fetches, decodes, and executes a single CPU instruction cycle.
-// Based on Guide Section 2.4 CPU cycle description [cite: 63]
+/**
+ * @brief Executes a single CPU instruction cycle.
+ * Checks for interrupts, handles load delay slot, fetches, decodes, executes,
+ * and updates PC/state for the next cycle.
+ * @param cpu Pointer to the Cpu state.
+ */
 void cpu_run_next_instruction(Cpu* cpu);
 
-// Fetches a 32-bit word from memory via the interconnect.
-// Based on Guide Section 2.4's load32 requirement [cite: 63]
-uint32_t cpu_load32(Cpu* cpu, uint32_t address);
-
-uint16_t cpu_load16(Cpu* cpu, uint32_t address); // <-- ADD DECLARATION
-
-// Decodes the fetched instruction and calls the appropriate execution function.
-// Based on Guide Section 2.10 [cite: 171]
+/**
+ * @brief Decodes the fetched instruction and calls the appropriate handler function.
+ * @param cpu Pointer to the Cpu state.
+ * @param instruction The 32-bit instruction word to decode and execute.
+ */
 void decode_and_execute(Cpu* cpu, uint32_t instruction);
 
-// Accessor function to read a GPR value.
-uint32_t cpu_reg(Cpu* cpu, uint32_t index);
-// Accessor function to write a GPR value (handles $zero).
-// Based on Guide Section 2.13 set_reg example [cite: 223]
-void cpu_set_reg(Cpu* cpu, uint32_t index, uint32_t value);
+/**
+ * @brief Triggers a CPU exception.
+ * Saves current state (EPC, Cause, SR), updates SR mode bits,
+ * and jumps to the appropriate exception handler vector.
+ * @param cpu Pointer to the Cpu state.
+ * @param cause The reason for the exception (from ExceptionCause enum).
+ */
+void cpu_exception(Cpu* cpu, ExceptionCause cause);
 
-// Memory Access via CPU (delegates to Interconnect)
-void cpu_store32(Cpu* cpu, uint32_t address, uint32_t value);
+// --- Register Access ---
+/**
+ * @brief Reads the value of a General Purpose Register (GPR) from the input set.
+ * Handles reads from $zero (always returns 0).
+ * @param cpu Pointer to the Cpu state.
+ * @param index The index (0-31) of the register to read.
+ * @return The 32-bit value of the register.
+ */
+uint32_t cpu_reg(Cpu* cpu, RegisterIndex index);
 
-// Branch Helper
+/**
+ * @brief Writes a value to a General Purpose Register (GPR) in the output set.
+ * Ignores writes to $zero (index 0), ensuring it remains 0.
+ * @param cpu Pointer to the Cpu state.
+ * @param index The index (0-31) of the register to write.
+ * @param value The 32-bit value to write.
+ */
+void cpu_set_reg(Cpu* cpu, RegisterIndex index, uint32_t value);
+
+// --- Branch/Jump Helper ---
+/**
+ * @brief Updates the next_pc for a branch instruction.
+ * Calculates target address based on current PC and sign-extended offset.
+ * NOTE: Does NOT set the cpu->branch_taken flag, the caller instruction must do that.
+ * @param cpu Pointer to the Cpu state.
+ * @param offset_se Sign-extended 16-bit branch offset (*not* shifted).
+ */
 void cpu_branch(Cpu* cpu, uint32_t offset_se);
 
-// Memory Access via CPU (delegates to Interconnect)
-void cpu_store16(Cpu* cpu, uint32_t address, uint16_t value); // <-- ADD THIS
 
-void cpu_exception(Cpu* cpu, ExceptionCause cause); // <-- Add prototype
-
-
-// Specific Instruction Implementation functions (prototypes)
-void op_lui(Cpu* cpu, uint32_t instruction);
-void op_ori(Cpu* cpu, uint32_t instruction); 
-void op_sw(Cpu* cpu, uint32_t instruction);
-void op_sll(Cpu* cpu, uint32_t instruction);  
-void op_addiu(Cpu* cpu, uint32_t instruction); 
-void op_j(Cpu* cpu, uint32_t instruction);  
-void op_or(Cpu* cpu, uint32_t instruction);      
-void op_cop0(Cpu* cpu, uint32_t instruction);  // <-- ADD: COP0 dispatcher
-void op_mtc0(Cpu* cpu, uint32_t instruction);  // <-- ADD: MTC0 handler
-void op_bne(Cpu* cpu, uint32_t instruction);
-void op_addi(Cpu* cpu, uint32_t instruction);
-void op_lw(Cpu* cpu, uint32_t instruction);     // <-- ADD THIS LINE
-void op_sltu(Cpu* cpu, uint32_t instruction);    // <-- ADD THIS LINE
-void op_addu(Cpu* cpu, uint32_t instruction);    // <-- ADD THIS LINE
-void op_sh(Cpu* cpu, uint32_t instruction);     // <-- ADD THIS LINE
-void op_jal(Cpu* cpu, uint32_t instruction);     // <-- ADD THIS LINE
-void op_andi(Cpu* cpu, uint32_t instruction);
-void op_sb(Cpu* cpu, uint32_t instruction);
-void op_jr(Cpu* cpu, uint32_t instruction);
-void op_lb(Cpu* cpu, uint32_t instruction); // <-- Add this line
-void op_beq(Cpu* cpu, uint32_t instruction); // <-- Add this line
-void op_mfc0(Cpu* cpu, uint32_t instruction); // <-- Add this line
-void op_and(Cpu* cpu, uint32_t instruction); // <-- Add this line
-void op_add(Cpu* cpu, uint32_t instruction); // <-- Add this line
-void op_bgtz(Cpu* cpu, uint32_t instruction); // <-- Add this line
-void op_blez(Cpu* cpu, uint32_t instruction); // <-- Ensure this exists (added as placeholder before)
-void op_lbu(Cpu* cpu, uint32_t instruction); // <-- Add this line
-void op_jalr(Cpu* cpu, uint32_t instruction); // <-- Add this line
-void op_bxx(Cpu* cpu, uint32_t instruction);  // <-- Add this for Opcode 0x01 group (special case)
-void op_slti(Cpu* cpu, uint32_t instruction); // <-- Add this line
-void op_subu(Cpu* cpu, uint32_t instruction); // <-- Add this line
-void op_sra(Cpu* cpu, uint32_t instruction); // <-- Add this line
-void op_div(Cpu* cpu, uint32_t instruction); // <-- Add this line
-void op_divu(Cpu* cpu, uint32_t instruction); // <-- Add this line
-void op_mflo(Cpu* cpu, uint32_t instruction); // <-- Add this line
-void op_srl(Cpu* cpu, uint32_t instruction); // <-- Add this line
-void op_sltiu(Cpu* cpu, uint32_t instruction); // <-- Add this line
-void op_slt(Cpu* cpu, uint32_t instruction); // <-- Add this line
-void op_mfhi(Cpu* cpu, uint32_t instruction); // <-- Add this line
-void op_syscall(Cpu* cpu, uint32_t instruction); // <-- Add this line
-void op_nor(Cpu* cpu, uint32_t instruction); // <-- Add this line
-void op_mtlo(Cpu* cpu, uint32_t instruction); // <-- Add this line
-void op_mthi(Cpu* cpu, uint32_t instruction); // <-- Add this line
-void op_rfe(Cpu* cpu, uint32_t instruction); // <-- ADD THIS LINE (Already present in your file!)
-void op_lhu(Cpu* cpu, uint32_t instruction);
-void op_lh(Cpu* cpu, uint32_t instruction);
-void op_sllv(Cpu* cpu, uint32_t instruction);
-void op_srav(Cpu* cpu, uint32_t instruction);
-void op_srlv(Cpu* cpu, uint32_t instruction);
-void op_multu(Cpu* cpu, uint32_t instruction);
-void op_xor(Cpu* cpu, uint32_t instruction);
-void op_break(Cpu* cpu, uint32_t instruction);
-void op_mult(Cpu* cpu, uint32_t instruction);
-void op_sub(Cpu* cpu, uint32_t instruction);
-void op_xori(Cpu* cpu, uint32_t instruction);
-void op_cop1(Cpu* cpu, uint32_t instruction); // COP1 (Floating Point - Unused)
-void op_cop2(Cpu* cpu, uint32_t instruction); // COP2 (GTE)
-void op_cop3(Cpu* cpu, uint32_t instruction); // COP3 (Unused)
-void op_lwl(Cpu* cpu, uint32_t instruction); // Load Word Left
-void op_lwr(Cpu* cpu, uint32_t instruction); // Load Word Right
-void op_swl(Cpu* cpu, uint32_t instruction); // Store Word Left
-void op_swr(Cpu* cpu, uint32_t instruction); // Store Word Right
-void op_lwc0(Cpu* cpu, uint32_t instruction); // Load Word Coprocessor 0
-void op_lwc1(Cpu* cpu, uint32_t instruction); // Load Word Coprocessor 1
-void op_lwc2(Cpu* cpu, uint32_t instruction); // Load Word Coprocessor 2 (GTE)
-void op_lwc3(Cpu* cpu, uint32_t instruction); // Load Word Coprocessor 3
-void op_swc0(Cpu* cpu, uint32_t instruction); // Store Word Coprocessor 0
-void op_swc1(Cpu* cpu, uint32_t instruction); // Store Word Coprocessor 1
-void op_swc2(Cpu* cpu, uint32_t instruction); // Store Word Coprocessor 2 (GTE)
-void op_swc3(Cpu* cpu, uint32_t instruction); // Store Word Coprocessor 3
-void op_illegal(Cpu* cpu, uint32_t instruction); // Illegal instruction handler
-// Memory Access via CPU (delegates to Interconnect)
-
-
+// --- Instruction Handler Prototypes (Internal linkage) ---
+// These functions implement the behavior of individual MIPS instructions.
+static void op_lui(Cpu* cpu, uint32_t instruction);
+static void op_ori(Cpu* cpu, uint32_t instruction);
+static void op_sw(Cpu* cpu, uint32_t instruction);
+static void op_sll(Cpu* cpu, uint32_t instruction);
+static void op_addiu(Cpu* cpu, uint32_t instruction);
+static void op_j(Cpu* cpu, uint32_t instruction);
+static void op_or(Cpu* cpu, uint32_t instruction);
+static void op_cop0(Cpu* cpu, uint32_t instruction);
+static void op_mtc0(Cpu* cpu, uint32_t instruction);
+static void op_rfe(Cpu* cpu, uint32_t instruction);
+static void op_bne(Cpu* cpu, uint32_t instruction);
+static void op_addi(Cpu* cpu, uint32_t instruction);
+static void op_lw(Cpu* cpu, uint32_t instruction);
+static void op_sltu(Cpu* cpu, uint32_t instruction);
+static void op_addu(Cpu* cpu, uint32_t instruction);
+static void op_sh(Cpu* cpu, uint32_t instruction);
+static void op_jal(Cpu* cpu, uint32_t instruction);
+static void op_andi(Cpu* cpu, uint32_t instruction);
+static void op_sb(Cpu* cpu, uint32_t instruction);
+static void op_jr(Cpu* cpu, uint32_t instruction);
+static void op_lb(Cpu* cpu, uint32_t instruction);
+static void op_beq(Cpu* cpu, uint32_t instruction);
+static void op_mfc0(Cpu* cpu, uint32_t instruction);
+static void op_and(Cpu* cpu, uint32_t instruction);
+static void op_add(Cpu* cpu, uint32_t instruction);
+static void op_bgtz(Cpu* cpu, uint32_t instruction);
+static void op_blez(Cpu* cpu, uint32_t instruction);
+static void op_lbu(Cpu* cpu, uint32_t instruction);
+static void op_jalr(Cpu* cpu, uint32_t instruction);
+static void op_bxx(Cpu* cpu, uint32_t instruction);
+static void op_slti(Cpu* cpu, uint32_t instruction);
+static void op_subu(Cpu* cpu, uint32_t instruction);
+static void op_sra(Cpu* cpu, uint32_t instruction);
+static void op_div(Cpu* cpu, uint32_t instruction);
+static void op_divu(Cpu* cpu, uint32_t instruction);
+static void op_mflo(Cpu* cpu, uint32_t instruction);
+static void op_srl(Cpu* cpu, uint32_t instruction);
+static void op_sltiu(Cpu* cpu, uint32_t instruction);
+static void op_slt(Cpu* cpu, uint32_t instruction);
+static void op_mfhi(Cpu* cpu, uint32_t instruction);
+static void op_syscall(Cpu* cpu, uint32_t instruction);
+static void op_nor(Cpu* cpu, uint32_t instruction);
+static void op_mtlo(Cpu* cpu, uint32_t instruction);
+static void op_mthi(Cpu* cpu, uint32_t instruction);
+static void op_lhu(Cpu* cpu, uint32_t instruction);
+static void op_lh(Cpu* cpu, uint32_t instruction);
+static void op_sllv(Cpu* cpu, uint32_t instruction);
+static void op_srav(Cpu* cpu, uint32_t instruction);
+static void op_srlv(Cpu* cpu, uint32_t instruction);
+static void op_multu(Cpu* cpu, uint32_t instruction);
+static void op_xor(Cpu* cpu, uint32_t instruction);
+static void op_break(Cpu* cpu, uint32_t instruction);
+static void op_mult(Cpu* cpu, uint32_t instruction);
+static void op_sub(Cpu* cpu, uint32_t instruction);
+static void op_xori(Cpu* cpu, uint32_t instruction);
+static void op_cop1(Cpu* cpu, uint32_t instruction);
+static void op_cop2(Cpu* cpu, uint32_t instruction);
+static void op_cop3(Cpu* cpu, uint32_t instruction);
+static void op_lwl(Cpu* cpu, uint32_t instruction);
+static void op_lwr(Cpu* cpu, uint32_t instruction);
+static void op_swl(Cpu* cpu, uint32_t instruction);
+static void op_swr(Cpu* cpu, uint32_t instruction);
+static void op_lwc0(Cpu* cpu, uint32_t instruction);
+static void op_lwc1(Cpu* cpu, uint32_t instruction);
+static void op_lwc2(Cpu* cpu, uint32_t instruction);
+static void op_lwc3(Cpu* cpu, uint32_t instruction);
+static void op_swc0(Cpu* cpu, uint32_t instruction);
+static void op_swc1(Cpu* cpu, uint32_t instruction);
+static void op_swc2(Cpu* cpu, uint32_t instruction);
+static void op_swc3(Cpu* cpu, uint32_t instruction);
+static void op_illegal(Cpu* cpu, uint32_t instruction);
 
 #endif // CPU_H
