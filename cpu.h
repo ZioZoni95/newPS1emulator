@@ -29,6 +29,43 @@ typedef enum {
 } ExceptionCause;
 
 
+// ============================================================= //
+// ==========>>> ADD INSTRUCTION CACHE PARTS BELOW <<<========== //
+// ============================================================= //
+
+/**
+ * @brief Constants defining the instruction cache geometry.
+ * Based on Guide Section 8.1 [cite: 2987]
+ */
+#define ICACHE_NUM_LINES 256       // 256 lines in the cache
+#define ICACHE_LINE_WORDS 4        // 4 words (instructions) per cache line
+#define ICACHE_SIZE_BYTES (ICACHE_NUM_LINES * ICACHE_LINE_WORDS * 4) // 4096 bytes total
+
+/**
+ * @brief Represents a single line in the instruction cache.
+ * Contains the tag, valid bits for each word, and the cached instruction data.
+ * Based on Guide Section 8.1
+ */
+typedef struct {
+    /**
+     * @brief The upper 20 bits of the physical address stored in this cache line.
+     * Used to verify if the cached data matches the requested address. [cite: 2990, 2999]
+     */
+    uint32_t tag;
+    /**
+     * @brief Validity flag for each of the 4 words in the cache line.
+     * True if the corresponding data word holds valid instruction data. [cite: 2991]
+     */
+    bool     valid[ICACHE_LINE_WORDS];
+    /**
+     * @brief The 4 cached instruction words (32-bit each).
+     */
+    uint32_t data[ICACHE_LINE_WORDS];
+} ICacheLine;
+
+// ============================================================= //
+// ============================================================= //
+
 // --- CPU State Structure ---
 // Defines the internal state of the emulated MIPS R3000A-compatible CPU.
 typedef struct Cpu {
@@ -63,6 +100,8 @@ typedef struct Cpu {
 
     // --- Connection to Memory System ---
     Interconnect* inter;    // Pointer to the interconnect module for memory accesses.
+
+    ICacheLine icache[ICACHE_NUM_LINES];
 
 } Cpu;
 
@@ -146,6 +185,15 @@ void cpu_set_reg(Cpu* cpu, RegisterIndex index, uint32_t value);
  */
 void cpu_branch(Cpu* cpu, uint32_t offset_se);
 
+
+/**
+ * @brief Fetches an instruction word from memory, using the instruction cache.
+ * Handles cache lookup, hit/miss logic, and fetching from interconnect on miss.
+ * @param cpu Pointer to the Cpu state (containing the cache).
+ * @param vaddr The virtual address of the instruction to fetch.
+ * @return The 32-bit instruction word.
+ */
+static uint32_t cpu_icache_fetch(Cpu* cpu, uint32_t vaddr); // Use Cpu* typedef
 
 // --- Instruction Handler Prototypes (Internal linkage) ---
 // These functions implement the behavior of individual MIPS instructions.
