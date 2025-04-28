@@ -47,6 +47,10 @@ void interconnect_init(Interconnect* inter, Bios* bios, Ram* ram) {
     // Initialize Interrupt Controller state
     inter->irq_status = 0; // No pending interrupts
     inter->irq_mask = 0;   // All interrupts masked
+    
+    // Initialize Timer state <<< ADD THIS CALL
+    timers_init(&inter->timers_state, inter);
+    
     printf("Interconnect Initialized (BIOS, RAM, DMA, GPU, IRQ states set).\n");
 }
 
@@ -93,6 +97,16 @@ uint32_t interconnect_load32(Interconnect* inter, uint32_t address) {
 
     // --- Hardware Register Checks (Specific Addresses First) ---
 
+// --- Check Timer Range --- <<< ADD THIS BLOCK
+    if (physical_addr >= TIMERS_START && physical_addr <= TIMERS_END) {
+        uint32_t timer_base_offset = physical_addr - TIMERS_START;
+        int timer_index = timer_base_offset / 0x10; // Each timer block is 0x10 bytes wide
+        uint32_t register_offset = physical_addr & 0xF; // Offset within the timer block (0, 4, 8)
+
+        // printf("~ Read32 from Timer %d Offset 0x%x\n", timer_index, register_offset);
+        return timer_read32(&inter->timers_state, timer_index, register_offset);
+    }
+    
     // Interrupt Controller Registers
     if (physical_addr == IRQ_STATUS_ADDR) { // 0x1f801070 (I_STAT)
         printf("~ Read32 from IRQ_STATUS (0x1f801070): Returning 0x%04x\n", inter->irq_status);
@@ -186,6 +200,16 @@ uint16_t interconnect_load16(Interconnect* inter, uint32_t address) {
     }
     uint32_t physical_addr = mask_region(address);
 
+// --- Check Timer Range --- <<< ADD THIS BLOCK
+    if (physical_addr >= TIMERS_START && physical_addr <= TIMERS_END) {
+        uint32_t timer_base_offset = physical_addr - TIMERS_START;
+        int timer_index = timer_base_offset / 0x10;
+        uint32_t register_offset = physical_addr & 0xF;
+
+        // printf("~ Read16 from Timer %d Offset 0x%x\n", timer_index, register_offset);
+        return timer_read16(&inter->timers_state, timer_index, register_offset);
+    }
+
     // Interrupt Controller Registers
     if (physical_addr == IRQ_STATUS_ADDR) { // 0x1f801070 (I_STAT)
         printf("~ Read16 from IRQ_STATUS (0x1f801070): Returning 0x%04x\n", inter->irq_status);
@@ -258,6 +282,12 @@ uint16_t interconnect_load16(Interconnect* inter, uint32_t address) {
 uint8_t interconnect_load8(Interconnect* inter, uint32_t address) {
     uint32_t physical_addr = mask_region(address);
 
+    // --- Check Timer Range --- <<< ADD THIS BLOCK
+    if (physical_addr >= TIMERS_START && physical_addr <= TIMERS_END) {
+        // 8-bit reads from timers are generally undefined or read partial registers.
+        fprintf(stderr, "Warning: Unhandled 8-bit read from Timer range: 0x%08x\n", physical_addr);
+        return 0; // Return 0 for safety
+    }
     // CDROM Registers (Example)
     if (physical_addr >= 0x1f801800 && physical_addr <= 0x1f801803) {
         // printf("~ Read8 from CDROM Reg (0x%08x): Returning 0 (Placeholder)\n", physical_addr); // Often noisy
@@ -316,6 +346,17 @@ void interconnect_store32(Interconnect* inter, uint32_t address, uint32_t value)
 
     uint32_t physical_addr = mask_region(address);
 
+
+    // --- Check Timer Range --- <<< ADD THIS BLOCK
+    if (physical_addr >= TIMERS_START && physical_addr <= TIMERS_END) {
+        uint32_t timer_base_offset = physical_addr - TIMERS_START;
+        int timer_index = timer_base_offset / 0x10;
+        uint32_t register_offset = physical_addr & 0xF;
+
+        // printf("~ Write32 to Timer %d Offset 0x%x = 0x%08x\n", timer_index, register_offset, value);
+        timer_write32(&inter->timers_state, timer_index, register_offset, value);
+        return; // Handled
+    }
     // --- Hardware Register Checks (Specific Addresses First) ---
 
     // Interrupt Controller Registers
@@ -448,6 +489,16 @@ void interconnect_store16(Interconnect* inter, uint32_t address, uint16_t value)
     }
     uint32_t physical_addr = mask_region(address);
 
+    // --- Check Timer Range --- <<< ADD THIS BLOCK
+    if (physical_addr >= TIMERS_START && physical_addr <= TIMERS_END) {
+        uint32_t timer_base_offset = physical_addr - TIMERS_START;
+        int timer_index = timer_base_offset / 0x10;
+        uint32_t register_offset = physical_addr & 0xF;
+
+        // printf("~ Write16 to Timer %d Offset 0x%x = 0x%04x\n", timer_index, register_offset, value);
+        timer_write16(&inter->timers_state, timer_index, register_offset, value);
+        return; // Handled
+     }
     // Interrupt Controller Registers
     if (physical_addr == IRQ_STATUS_ADDR) { // 0x1f801070 (I_STAT)
         uint16_t ack_mask = value & 0x7FF;
@@ -527,6 +578,13 @@ void interconnect_store16(Interconnect* inter, uint32_t address, uint16_t value)
 void interconnect_store8(Interconnect* inter, uint32_t address, uint8_t value) {
     uint32_t physical_addr = mask_region(address);
 
+    // --- Check Timer Range --- <<< ADD THIS BLOCK
+    if (physical_addr >= TIMERS_START && physical_addr <= TIMERS_END) {
+        // 8-bit writes to timers are generally undefined or write partial registers.
+        fprintf(stderr, "Warning: Unhandled 8-bit write to Timer range: 0x%08x = 0x%02x\n", physical_addr, value);
+        // Ignoring is safest for now.
+        return;
+    }
     // CDROM Registers
     if (physical_addr >= 0x1f801800 && physical_addr <= 0x1f801803) {
         printf("~ Write8 to CDROM Reg (0x%08x) = 0x%02x (Ignoring)\n", physical_addr, value);

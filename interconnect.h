@@ -9,11 +9,16 @@
 #include "ram.h"
 #include "dma.h"
 #include "gpu.h"
+#include "timers.h"
+
 
 /* --- Memory Map Definitions (Physical Addresses) ---
  * These define the physical address ranges used by the interconnect
  * after mapping the CPU's virtual address.
  */
+#define TIMERS_START 0x1f801100
+#define TIMERS_SIZE  0x30 // Covers Timers 0, 1, 2
+#define TIMERS_END   (TIMERS_START + TIMERS_SIZE - 1)
 
 // Main RAM (2 Megabytes)
 #define RAM_START 0x00000000
@@ -102,7 +107,7 @@
  * Holds pointers/instances of all main system components accessed via the bus.
  * Routes memory accesses from the CPU to the correct component.
  */
-typedef struct {
+typedef struct Interconnect {
     Bios* bios; // Pointer to the loaded BIOS data
     Ram* ram;   // Pointer to the main RAM data buffer
     Gpu gpu;    // GPU state (embedded directly)
@@ -112,6 +117,7 @@ typedef struct {
     uint16_t irq_status; // I_STAT Register state (reflects pending IRQs)
     uint16_t irq_mask;   // I_MASK Register state (enables/disables IRQs)
     // --------------------------------
+    Timers timers_state; // <<< ADD THIS MEMBER
 
     // Add pointers/state for other peripherals here later (Timers, SPU, CDROM, etc.)
 

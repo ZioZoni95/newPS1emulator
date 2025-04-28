@@ -191,6 +191,9 @@ void cpu_run_next_instruction(Cpu* cpu) {
     // This might update cpu->next_pc and set cpu->branch_taken = true
     decode_and_execute(cpu, instruction);
 
+    // Step timers forward by 1 'CPU cycle' (placeholder for real timing)
+    timers_step(&cpu->inter->timers_state, 1); // Pass 1 cycle for now
+
     // --- 7. Finalize State ---
     // Ensure R0 in the output set is still 0 for the next cycle.
     // (cpu_set_reg already handles this, but double-checking doesn't hurt)
