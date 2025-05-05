@@ -32,6 +32,9 @@ struct Interconnect;
 #define CDC_SEEKL       0x15 // Seek to LBA (Logical - data track only?)
 #define CDC_TEST        0x19 // Test commands (various subfunctions)
 #define CDC_GETID       0x1A // Get drive ID (returns SCEx string / No Disc / Licensed status)
+#define CDC_STOP        0x08 // Stop CD-DA playback/Read <<< Add this if missing
+
+#define CD_SECTOR_SIZE 2352 // Common raw sector size for Mode 2
 
 // --- Simple FIFO Placeholder ---
 // Represents Parameter and Response FIFOs (limited size).
@@ -73,6 +76,15 @@ typedef struct {
     Fifo8 response_fifo;
     // TODO: Add Data FIFO/Buffer for sector data (read via 1802h.2)
 
+      // --- Data Buffer for Polled Reads --- <<< NEW SECTION
+    /** @brief Buffer to hold the last read sector's data */
+    uint8_t data_buffer[CD_SECTOR_SIZE];
+    /** @brief Number of bytes currently available in the data buffer */
+    uint32_t data_buffer_count;
+    /** @brief Read pointer within the data buffer */
+    uint32_t data_buffer_read_ptr;
+    // --------------------------------------- <<< END NEW SECTION
+
     // --- Internal State Machine ---
     /** @brief Current operational state of the drive */
     CdromState current_state;
@@ -87,6 +99,12 @@ typedef struct {
     bool disc_present;
     /** @brief Flag indicating if the loaded disc is an Audio CD */
     bool is_cd_da; // TODO: Determine this from CUE sheet or GetID?
+// --- Mode Settings (Set by SetMode 0x0E) --- <<< NEW SECTION
+    /** @brief Drive speed (0=normal, 1=double) */
+    bool double_speed;
+    /** @brief Sector size bit (0=2048 bytes, 1=2340 bytes) */
+    bool sector_size_is_2340; // True if mode bit 5 is 1
+
     /** @brief File handle for the loaded .bin or .iso disc image */
     FILE* disc_file;
     // TODO: Add sector buffer, disc size LBA, track information
