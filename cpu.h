@@ -185,6 +185,10 @@ void cpu_set_reg(Cpu* cpu, RegisterIndex index, uint32_t value);
  */
 void cpu_branch(Cpu* cpu, uint32_t offset_se);
 
+//EXCEPTION HANDLER
+void cpu_fire_exception(Cpu* cpu, ExceptionCause cause);
+
+
 
 /**
  * @brief Fetches an instruction word from memory, using the instruction cache.

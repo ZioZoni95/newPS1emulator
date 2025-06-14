@@ -43,6 +43,42 @@ static void gp1_display_mode(Gpu* gpu, uint32_t value);
 // --- Helper Functions ---
 
 /**
+ * @brief Reads a 16-bit pixel from VRAM at given coordinates.
+ * @param gpu Pointer to the Gpu instance.
+ * @param x The x-coordinate in VRAM.
+ * @param y The y-coordinate in VRAM.
+ * @return The 16-bit pixel data.
+ */
+static uint16_t gpu_vram_read(Gpu* gpu, uint16_t x, uint16_t y) {
+    // Prevent reading out of bounds
+    if (x >= VRAM_WIDTH || y >= VRAM_HEIGHT) {
+        return 0;
+    }
+    // Calculate the linear index in the VRAM buffer
+    uint32_t index = (y * VRAM_WIDTH) + x;
+    return ((uint16_t*)gpu->vram.data)[index];
+}
+
+/**
+ * @brief Writes a 16-bit pixel to VRAM at given coordinates.
+ * @param gpu Pointer to the Gpu instance.
+ * @param x The x-coordinate in VRAM.
+ * @param y The y-coordinate in VRAM.
+ * @param pixel_data The 16-bit pixel data to write.
+ */
+static void gpu_vram_write(Gpu* gpu, uint16_t x, uint16_t y, uint16_t pixel_data) {
+    // Prevent writing out of bounds
+    if (x >= VRAM_WIDTH || y >= VRAM_HEIGHT) {
+        return;
+    }
+    // Calculate the linear index in the VRAM buffer
+    uint32_t index = (y * VRAM_WIDTH) + x;
+    ((uint16_t*)gpu->vram.data)[index] = pixel_data;
+}
+
+
+
+/**
  * @brief Clears the GP0 command buffer.
  * @param gpu Pointer to the Gpu instance.
  */
@@ -351,14 +387,34 @@ static void gp0_image_load(Gpu* gpu) {
 
 /** GP0(0xC0): Copy Rectangle (VRAM to CPU/DMA) */
 static void gp0_image_store(Gpu* gpu) {
-     if (gpu->gp0_command_buffer.count < 3) {
-         fprintf(stderr, "GP0(0xC0) Error: Expected 3 words, got %u\n", gpu->gp0_command_buffer.count); return; }
-    // TODO: Implement VRAM read logic & buffering for GPUREAD
+    // Get source coordinates from the second command word
+    uint32_t src_coord = gpu->gp0_command_buffer.buffer[1];
+    gpu->vram_x_start = (uint16_t)(src_coord & 0x3FF);
+    gpu->vram_y_start = (uint16_t)((src_coord >> 16) & 0x1FF);
+
+    // Get dimensions from the third command word
     uint32_t dimensions = gpu->gp0_command_buffer.buffer[2];
-    uint16_t w = (uint16_t)(dimensions & 0x3FF); // Width is 10 bits
-    uint16_t h = (uint16_t)((dimensions >> 16) & 0x1FF); // Height is 9 bits
-    printf("GP0(0xC0): Image Store (%ux%u) - VRAM Read Not Implemented\n", w, h);
-    (void)gpu;
+    gpu->vram_transfer_width = (uint16_t)(dimensions & 0x3FF);
+    gpu->vram_transfer_height = (uint16_t)((dimensions >> 16) & 0x1FF);
+
+    // Hardware requires the width to be an even number of pixels for transfers.
+    // Round up to the next multiple of 2.
+    gpu->vram_transfer_width = (gpu->vram_transfer_width + 1) & ~1;
+    
+    // Calculate how many 32-bit words we need to send.
+    // Each word contains two 16-bit pixels.
+    uint32_t total_pixels = (uint32_t)gpu->vram_transfer_width * (uint32_t)gpu->vram_transfer_height;
+    gpu->gp0_read_remaining_words = (total_pixels + 1) / 2;
+
+    // Set the GPU into the correct mode for the CPU to read from it.
+    gpu->gp0_mode = GP0_MODE_VRAM_TO_CPU;
+    
+    // Initialize the transfer cursors to the start position.
+    gpu->vram_x_current = gpu->vram_x_start;
+    gpu->vram_y_current = gpu->vram_y_start;
+
+    printf("GP0(0xC0): VRAM->CPU. From:(%u,%u), Size:(%u,%u), Words:%u\n",
+        gpu->vram_x_start, gpu->vram_y_start, gpu->vram_transfer_width, gpu->vram_transfer_height, gpu->gp0_read_remaining_words);
 }
 
 
@@ -512,6 +568,7 @@ void gpu_gp1(Gpu* gpu, uint32_t command) {
 /** Reads the GPU Status Register (GPUSTAT) */
 uint32_t gpu_read_status(Gpu* gpu) {
     uint32_t r = 0;
+    // --- Basic state bits (0-24) ---
     r |= (uint32_t)gpu->page_base_x << 0;
     r |= (uint32_t)gpu->page_base_y << 4;
     r |= (uint32_t)gpu->semi_transparency << 5;
@@ -520,44 +577,76 @@ uint32_t gpu_read_status(Gpu* gpu) {
     r |= (uint32_t)gpu->draw_to_display << 10;
     r |= (uint32_t)gpu->force_set_mask_bit << 11;
     r |= (uint32_t)gpu->preserve_masked_pixels << 12;
-    r |= (uint32_t)gpu->field << 13; // TODO: Needs timing update
+    r |= (uint32_t)gpu->field << 13;
     r |= (uint32_t)gpu->texture_disable << 15;
-    // Horizontal Resolution bits (check Nocash STAT description for exact mapping)
-    // STAT[16] = Hres2?(0) | Hres1(0) -> Raw=0..3 -> (raw & 1)
-    // STAT[17] = Hres1(1)             -> Raw=0..3 -> (raw >> 1) & 1
-    // STAT[18] = Hres2?(1)             -> Raw=4..7 -> (raw >> 2) & 1
     uint32_t hres_raw_val = ((uint32_t)gpu->hres_raw.hr2 << 2) | (uint32_t)gpu->hres_raw.hr1;
-    r |= ((hres_raw_val >> 0) & 1) << 16; // Bit 16 seems to be (hr1 & 1) ^ (hr2 & 1) based on Nocash examples? Using direct mapping for now.
-    r |= ((hres_raw_val >> 1) & 1) << 17; // Bit 17
-    r |= ((hres_raw_val >> 2) & 1) << 18; // Bit 18
-    r |= (0 << 19); // VRES Hack - STAT[19]
-    r |= ((uint32_t)gpu->vmode << 20); // STAT[20]
-    r |= ((uint32_t)gpu->display_depth << 21); // STAT[21]
-    r |= ((uint32_t)gpu->interlaced << 22); // STAT[22]
-    r |= ((uint32_t)gpu->display_disabled << 23); // STAT[23]
-    r |= ((uint32_t)gpu->interrupt << 24); // STAT[24]
-    // Ready Flags (Hardcoded)
-    r |= (1 << 26); // STAT[26] - Ready to receive command word
-    r |= (1 << 27); // STAT[27] - Ready to send VRAM to CPU
-    r |= (1 << 28); // STAT[28] - Ready to receive DMA block
-    r |= ((uint32_t)gpu->dma_setting << 29); // STAT[30:29]
-    // DMA Request Signal (derived from dma_setting and ready flags)
-    uint32_t dma_request = 0;
-     switch (gpu->dma_setting) {
-         case GPU_DMA_Off: dma_request = 0; break;
-         case GPU_DMA_Fifo: dma_request = (r >> 26) & 1; break; // Ready CMD = FIFO Ready?
-         case GPU_DMA_CpuToGp0: dma_request = (r >> 28) & 1; break; // Ready DMA = GP0 DMA Ready?
-         case GPU_DMA_VRamToCpu: dma_request = (r >> 27) & 1; break; // Ready VRAM->CPU
-     }
-     r |= (dma_request << 25); // STAT[25]
-    // Bit 31: Odd/Even line signal (needs timing) - Placeholder 0
+    r |= ((hres_raw_val >> 0) & 1) << 16;
+    r |= ((hres_raw_val >> 1) & 1) << 17;
+    r |= ((hres_raw_val >> 2) & 1) << 18;
+    r |= (gpu->vres == Y480Lines) << 19;
+    r |= ((uint32_t)gpu->vmode << 20);
+    r |= ((uint32_t)gpu->display_depth << 21);
+    r |= ((uint32_t)gpu->interlaced << 22);
+    r |= ((uint32_t)gpu->display_disabled << 23);
+    r |= ((uint32_t)gpu->interrupt << 24);
+    
+    // --- CPU/GPU Sync Flags (26-28) ---
+    // STAT[26]: Ready to receive a command. (1 if not in a data transfer or multi-word command).
+    r |= (gpu->gp0_mode == GP0_MODE_COMMAND && gpu->gp0_words_remaining == 0) << 26;
+    // STAT[27]: Ready to send data from VRAM to CPU. (1 if we are in VRAM_TO_CPU mode).
+    r |= (gpu->gp0_mode == GP0_MODE_VRAM_TO_CPU) << 27;
+    // STAT[28]: Ready to receive a DMA block.
+    r |= (1 << 28); // Always ready for now.
+    
+    // --- DMA Direction (29-30) ---
+    r |= ((uint32_t)gpu->dma_setting << 29);
+    
+    // Bit 25 is a derived DMA request signal, can be left 0 for now.
+    // Bit 31 is odd/even line signal, can be left 0 for now.
     return r;
 }
 
 /** Reads data from the GPUREAD port (e.g., after Image Store command) */
 uint32_t gpu_read_data(Gpu* gpu) {
-      // TODO: Implement reading data prepared by GP0(C0) Image Store
-      fprintf(stderr, "GPU Read Data (GPUREAD) - Not Implemented, returning 0\n");
-      (void)gpu; // Suppress unused warning
-      return 0; // Return dummy data for now
+    // This function should only be called by the CPU when the GPU is in VRAM_TO_CPU mode.
+    if (gpu->gp0_mode != GP0_MODE_VRAM_TO_CPU) {
+        fprintf(stderr, "Warning: GPUREAD access outside of VRAM_TO_CPU mode.\n");
+        return 0;
+    }
+
+    if (gpu->gp0_read_remaining_words > 0) {
+        // Read the first 16-bit pixel from the current VRAM coordinates.
+        uint16_t pixel1 = gpu_vram_read(gpu, gpu->vram_x_current, gpu->vram_y_current);
+        
+        // Advance the coordinates for the next pixel.
+        gpu->vram_x_current++;
+        if (gpu->vram_x_current >= gpu->vram_x_start + gpu->vram_transfer_width) {
+            gpu->vram_x_current = gpu->vram_x_start; // Wrap to next line
+            gpu->vram_y_current++;
+        }
+
+        // Read the second 16-bit pixel.
+        uint16_t pixel2 = gpu_vram_read(gpu, gpu->vram_x_current, gpu->vram_y_current);
+
+        // Advance the coordinates again.
+        gpu->vram_x_current++;
+        if (gpu->vram_x_current >= gpu->vram_x_start + gpu->vram_transfer_width) {
+            gpu->vram_x_current = gpu->vram_x_start; // Wrap to next line
+            gpu->vram_y_current++;
+        }
+
+        gpu->gp0_read_remaining_words--;
+        
+        // If that was the last word, the transfer is complete. Return to normal command mode.
+        if (gpu->gp0_read_remaining_words == 0) {
+            gpu->gp0_mode = GP0_MODE_COMMAND;
+            printf("GPU: VRAM->CPU transfer complete.\n");
+        }
+        
+        // Combine the two 16-bit pixels into a single 32-bit word and return it.
+        return ((uint32_t)pixel2 << 16) | pixel1;
+    }
+
+    fprintf(stderr, "Warning: GPUREAD access after transfer was complete.\n");
+    return 0; // Should not happen if the CPU is well-behaved.
 }

@@ -633,6 +633,15 @@ void interconnect_store8(Interconnect* inter, uint32_t address, uint8_t value) {
 }
 
 
+/**
+ * @brief Sets a bit in the IRQ_STATUS register to request an interrupt.
+ * @param inter The interconnect instance.
+ * @param type The type of interrupt to request, from the 'Interrupt' enum.
+ */
+void interconnect_request_interrupt(Interconnect* inter, Interrupt type) {
+    inter->irq_status |= (1 << type);
+}
+
 // --- DMA Transfer Logic ---
 // (Based on Guide Section 3.7, 3.8, 3.9, 3.10)
 

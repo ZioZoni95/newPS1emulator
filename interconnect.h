@@ -104,6 +104,21 @@
 #define IRQ_PIO      10 // PIO (Controller?) interrupt (Lightpen?)
 
 
+// --- NEW: Define the Interrupt types as an enum ---
+typedef enum {
+    INT_VBLANK     = 0,  // Vertical Blanking interrupt
+    INT_GPU        = 1,  // GPU interrupt
+    INT_CDROM      = 2,  // CD-ROM interrupt
+    INT_DMA        = 3,  // DMA interrupt
+    INT_TIMER0     = 4,  // Timer 0
+    INT_TIMER1     = 5,  // Timer 1
+    INT_TIMER2     = 6,  // Timer 2
+    INT_CONTROLLER = 7,  // Controller and Memory Card
+    INT_SIO        = 8,  // Serial I/O
+    INT_SPU        = 9,  // Sound Processing Unit
+    INT_PIO        = 10  // Parallel I/O
+} Interrupt;
+
 /* --- Interconnect Structure Definition ---
  * Holds pointers/instances of all main system components accessed via the bus.
  * Routes memory accesses from the CPU to the correct component.
@@ -206,6 +221,7 @@ void interconnect_store8(Interconnect* inter, uint32_t address, uint8_t value);
  * @param irq_line The interrupt line number (0-10) to request.
  */
 void interconnect_request_irq(Interconnect* inter, uint32_t irq_line);
+void interconnect_request_interrupt(Interconnect* inter, Interrupt type);
 
 
 #endif // INTERCONNECT_H

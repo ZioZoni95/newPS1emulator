@@ -201,6 +201,9 @@
          }
          total_cycles += cycles_per_frame;
 
+        interconnect_request_interrupt(&interconnect_state, INT_VBLANK);
+
+
          //step per le periferiche per ogni ciclo di clock
         timers_step(&interconnect_state.timers_state, 1);
         cdrom_step(&cdrom_drive, 1);

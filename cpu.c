@@ -136,6 +136,47 @@ void cpu_exception(Cpu* cpu, ExceptionCause cause) {
     cpu->next_pc = cpu->pc + 4;
 }
 
+/**
+ * @brief Triggers a CPU exception, saving the current state and jumping to the handler.
+ * @param cpu The CPU instance.
+ * @param cause The reason for the exception (e.g., SYSCALL, INTERRUPT).
+ */
+void cpu_fire_exception(Cpu* cpu, ExceptionCause cause) {
+    printf("!!! CPU Exception: Cause=0x%02x, PC=0x%08x, InDelaySlot=%d !!!\n", 
+           cause, cpu->pc, cpu->is_in_delay_slot);
+
+    // Get the address of the instruction that caused the exception.
+    // If we were in a branch delay slot, the EPC should point to the branch instruction itself.
+    uint32_t exception_pc = cpu->pc;
+    if (cpu->is_in_delay_slot) {
+        exception_pc -= 4; // Point EPC to the branch instruction
+        // Also set the BD bit in the Cause register
+        // cpu->cop0_regs[CAUSE] |= (1 << 31);
+    }
+    
+    // 1. Save the exception address to the EPC register
+    cpu->cop0_regs[EPC] = exception_pc;
+
+    // 2. Set the Cause register with the exception code
+    // (Clearing the top bits first)
+    cpu->cop0_regs[CAUSE] = (uint32_t)cause << 2;
+
+    // 3. Disable interrupts by pushing the interrupt enable stack in the Status Register
+    // This is like: SR = (SR & 0xFFFFFFC0) | ((SR & 0x3F) << 2)
+    // It shifts the last 3 pairs of user/supervisor/kernel mode bits to the left,
+    // effectively disabling interrupts.
+    uint32_t sr = cpu->cop0_regs[SR];
+    sr = (sr & ~0x3F) | ((sr & 0xF) << 2);
+    cpu->cop0_regs[SR] = sr;
+
+    // 4. Set the PC to the generic exception handler in the BIOS
+    // This is always 0x80 for non-reset exceptions.
+    cpu->pc = 0x80;
+    
+    // We are no longer in a delay slot after an exception
+    cpu->in_delay_slot = false; 
+}
+
 
 // --- Main Execution Cycle ---
 /**
@@ -1233,3 +1274,4 @@ static void op_illegal(Cpu* cpu, uint32_t instruction) {
             instruction, cpu->current_pc);
     cpu_exception(cpu, EXCEPTION_ILLEGAL_INSTRUCTION); // [cite: 1473]
 }
+
