@@ -23,6 +23,21 @@
  #include "renderer.h" // Include renderer for type definitions and init/destroy
  
  int main(int argc, char *argv[]) {
+
+     // <<< ADD THIS BLOCK TO ENABLE FILE LOGGING >>>
+    // Redirect stdout and stderr to a log file
+    FILE *log_file = freopen("emulator_log.txt", "w", stdout);
+    if (log_file == NULL) {
+        perror("Failed to open log file for stdout");
+        return 1; // Exit if we can't create the log file
+    }
+    // Also redirect stderr to the same file
+    freopen("emulator_log.txt", "a", stderr);
+    setbuf(stdout, NULL); // Disable buffering to see logs immediately
+    setbuf(stderr, NULL);
+    printf("--- Log Started ---\n");
+    // <<< END OF LOGGING BLOCK >>>
+    
      // --- Configuration ---
      // Use command-line argument for BIOS path, otherwise default.
      const char* bios_path = (argc > 1) ? argv[1] : "roms/SCPH1001.BIN"; // Default path
