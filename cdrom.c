@@ -50,6 +50,12 @@ static uint8_t bcd_to_int(uint8_t bcd);
 static void update_status_register(Cdrom* cdrom);
 static void trigger_interrupt(Cdrom* cdrom, uint8_t int_code);
 
+static void cdrom_schedule_event(Cdrom* cdrom, uint32_t cycles, void (*handler)(Cdrom*));
+static void cmd_init_complete(Cdrom* cdrom); // <<< ADD THIS LINE
+
+static void cmd_pause_complete(Cdrom* cdrom); // <<< NEW: Completion handler for Pause
+
+
 
 // --- FIFO Helpers ---
 // ... (fifo_init, fifo_push, fifo_pop, fifo_clear, fifo_is_empty, fifo_is_full - unchanged) ...
@@ -112,6 +118,18 @@ static uint8_t bcd_to_int(uint8_t bcd) {
 #define STAT_BUSY       (1 << 6)
 #define STAT_PLAYING    (1 << 7) // Placeholder
 
+
+/**
+ * @brief Schedules a completion event to occur after a certain number of cycles.
+ * @param cdrom Pointer to the Cdrom state structure.
+ * @param cycles The delay in CPU cycles.
+ * @param handler The function to call when the delay is over.
+ */
+static void cdrom_schedule_event(Cdrom* cdrom, uint32_t cycles, void (*handler)(Cdrom*)) {
+    cdrom->cycles_until_event = cycles;
+    cdrom->pending_completion_handler = handler;
+}
+
 static void update_status_register(Cdrom* cdrom) {
     // Preserve bits that aren't dynamically determined here
     uint8_t preserved_bits = cdrom->status & (STAT_BUSY | STAT_PLAYING | STAT_MOTORON); // Keep Busy, Playing, MotorOn
@@ -149,29 +167,41 @@ static void cmd_get_stat(Cdrom* cdrom) {
 }
 
 static void cmd_init(Cdrom* cdrom) {
-    printf("~ CDROM CMD: Init (0x0A)\n");
+    printf("~ CDROM CMD: Init (0x0A) - Step 1: Acknowledge\n");
     cdrom->current_state = CD_STATE_CMD_EXEC;
     cdrom->status |= STAT_BUSY;
 
+    // The first response happens immediately
+    update_status_register(cdrom);
+    fifo_push(&cdrom->response_fifo, cdrom->status);
+    trigger_interrupt(cdrom, 3); // INT3: First response ready
+
+    // Schedule the second part of the command to happen after a delay
+    // We'll use a placeholder delay of ~200,000 cycles
+    cdrom_schedule_event(cdrom, 200000, cmd_init_complete);
+}
+
+/** @brief Second part of the Init command, executed after a delay. */
+static void cmd_init_complete(Cdrom* cdrom) {
+    printf("  CDROM Init - Step 2: Completion\n");
+    
+    // Internal state reset happens here
     cdrom->interrupt_enable = 0;
     cdrom->interrupt_flags = 0;
     fifo_clear(&cdrom->param_fifo);
-    fifo_clear(&cdrom->response_fifo);
+    // Note: We don't clear the response fifo here, as it may still contain the first response
     cdrom->target_lba = 0;
     cdrom->double_speed = false;
     cdrom->sector_size_is_2340 = false;
     cdrom->data_buffer_count = 0;
     cdrom->data_buffer_read_ptr = 0;
-    cdrom->status = (cdrom->index & 0x03) | STAT_PRMEMPT | STAT_PRMWRDY | STAT_BUSY;
 
-    fifo_push(&cdrom->response_fifo, cdrom->status);
-    trigger_interrupt(cdrom, 3);
-
-    // TODO: Add realistic Init delay
+    // The second response is now ready
     update_status_register(cdrom);
     cdrom->status &= ~STAT_BUSY;
     fifo_push(&cdrom->response_fifo, cdrom->status);
-    trigger_interrupt(cdrom, 2);
+    trigger_interrupt(cdrom, 2); // INT2: Command complete
+    
     cdrom->current_state = CD_STATE_IDLE;
 }
 
@@ -379,6 +409,11 @@ static void cmd_pause(Cdrom* cdrom) {
     fifo_push(&cdrom->response_fifo, cdrom->status);
     trigger_interrupt(cdrom, 3);
 
+    // --- SCHEDULE THE COMPLETION EVENT ---
+    // Instead of doing the work now, we schedule it to happen after a delay.
+    // Let's use a placeholder value for the delay, like ~100,000 cycles.
+    cdrom_schedule_event(cdrom, 100000, cmd_pause_complete);
+
     // Internal Pause Action
     cdrom->status &= ~STAT_PLAYING;
     cdrom->data_buffer_count = 0; // Pause likely invalidates data buffer?
@@ -392,6 +427,26 @@ static void cmd_pause(Cdrom* cdrom) {
     trigger_interrupt(cdrom, 2);
     cdrom->current_state = CD_STATE_IDLE;
 }
+
+/**
+ * @brief The completion part of the Pause command, executed after a delay.
+ */
+static void cmd_pause_complete(Cdrom* cdrom) {
+    printf("  CDROM Pause: Completion part executed.\n");
+    
+    // Internal Pause Action
+    cdrom->status &= ~STAT_PLAYING;
+    cdrom->data_buffer_count = 0;
+    cdrom->data_buffer_read_ptr = 0;
+
+    // Second Response (INT2) - The command is now complete.
+    update_status_register(cdrom);
+    cdrom->status &= ~STAT_BUSY;
+    fifo_push(&cdrom->response_fifo, cdrom->status);
+    trigger_interrupt(cdrom, 2);
+    cdrom->current_state = CD_STATE_IDLE;
+}
+
 
 static void cmd_seek_l(Cdrom* cdrom) {
     printf("~ CDROM CMD: SeekL (0x15) to LBA %u\n", cdrom->target_lba);
@@ -612,11 +667,26 @@ bool cdrom_load_disc(Cdrom* cdrom, const char* bin_filename) {
     cdrom->disc_present = false;
     cdrom->is_cd_da = false;
     printf("CDROM: Attempting to load disc image '%s'\n", bin_filename);
+     // <<< START OF FIX >>>
+    // Open the file for reading in binary mode
     cdrom->disc_file = fopen(bin_filename, "rb");
     if (!cdrom->disc_file) {
         perror("CDROM Error: Failed to open disc image");
         return false;
     }
+
+    // Check if the path is a directory by trying to read from it.
+    // Reading from a directory handle will fail.
+    fgetc(cdrom->disc_file);
+    if (ferror(cdrom->disc_file)) {
+        perror("CDROM Error: Path is a directory or cannot be read");
+        fclose(cdrom->disc_file);
+        cdrom->disc_file = NULL;
+        return false;
+    }
+    // Rewind back to the start of the file
+    rewind(cdrom->disc_file);
+    // <<< END OF FIX >>>
     printf("CDROM: Disc image loaded successfully.\n");
     cdrom->disc_present = true;
     cdrom->current_state = CD_STATE_IDLE;
@@ -669,6 +739,9 @@ uint8_t cdrom_read_register(Cdrom* cdrom, uint32_t addr) {
 }
 
 void cdrom_write_register(Cdrom* cdrom, uint32_t addr, uint8_t value) {
+    // THIS IS THE CRUCIAL LOGGING LINE WE NEED TO SEE
+    printf("CDROM Write: Index=%d, Offset=0x%x, Value=0x%02x\n", cdrom->index, addr & 3, value);
+
     uint8_t offset = addr & 0x3;
     uint8_t reg_index = cdrom->index;
 
@@ -679,27 +752,61 @@ void cdrom_write_register(Cdrom* cdrom, uint32_t addr, uint8_t value) {
 
     switch (offset) {
         case CDREG_COMMAND: // Command Register (1801h) - Requires Index 0
-            if (reg_index == 0) cdrom_handle_command(cdrom, value);
-            else fprintf(stderr, "CDROM Write Error: Write to Command Reg (1801h) with Index %d != 0\n", reg_index);
+            if (reg_index == 0) {
+                cdrom_handle_command(cdrom, value);
+            } else {
+                fprintf(stderr, "CDROM Write Error: Write to Command Reg (1801h) with Index %d != 0\n", reg_index);
+            }
             break;
 
         case CDREG_PARAMETER: // Parameter FIFO (1802h) - Requires Index 0
             if (reg_index == 0) {
-                 if (!fifo_push(&cdrom->param_fifo, value)) fprintf(stderr, "CDROM Warning: Parameter FIFO overflow!\n");
+                 if (!fifo_push(&cdrom->param_fifo, value)) {
+                     fprintf(stderr, "CDROM Warning: Parameter FIFO overflow!\n");
+                 }
                  update_status_register(cdrom);
-            } else fprintf(stderr, "CDROM Write Error: Write to Param Reg (1802h) with Index %d != 0\n", reg_index);
+            } else {
+                fprintf(stderr, "CDROM Write Error: Write to Param Reg (1802h) with Index %d != 0\n", reg_index);
+            }
             break;
 
         case CDREG_REQUEST: // Request/Interrupt Reg (1803h) - Index 0 or 1
              if (reg_index == 0) { // Request Register Write (1803h.0)
-                if (value & 0x80) fifo_clear(&cdrom->param_fifo);
+                if (value & 0x80) {
+                    fifo_clear(&cdrom->param_fifo);
+                }
                 update_status_register(cdrom);
              } else if (reg_index == 1) { // Interrupt Enable / Ack Write (1803h.1)
                  cdrom->interrupt_enable = value & 0x1F;
                  uint8_t ack_flags = value & 0x1F;
                  cdrom->interrupt_flags &= ~ack_flags;
-                 if (value == 0x40) cdrom->interrupt_flags = 0;
-             } else fprintf(stderr, "CDROM Write Error: Write to 1803h with Index %d != 0 or 1\n", reg_index);
+                 if (value == 0x40) {
+                     cdrom->interrupt_flags = 0;
+                 }
+             } else {
+                 fprintf(stderr, "CDROM Write Error: Write to 1803h with Index %d != 0 or 1\n", reg_index);
+             }
             break;
+    }
+}
+
+/**
+ * @brief Steps the CD-ROM state machine, counting down cycles for scheduled events.
+ * This should be called from your main emulator loop.
+ * @param cdrom Pointer to the Cdrom state structure.
+ * @param cycles The number of CPU cycles that have passed.
+ */
+void cdrom_step(Cdrom* cdrom, uint32_t cycles) {
+    if (cdrom->cycles_until_event > 0) {
+        if (cycles >= cdrom->cycles_until_event) {
+            cdrom->cycles_until_event = 0;
+            // The event is due, call the handler if it exists
+            if (cdrom->pending_completion_handler) {
+                cdrom->pending_completion_handler(cdrom);
+                cdrom->pending_completion_handler = NULL; // Clear handler after execution
+            }
+        } else {
+            cdrom->cycles_until_event -= cycles;
+        }
     }
 }

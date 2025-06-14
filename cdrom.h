@@ -11,6 +11,7 @@
 
 // Forward declaration
 struct Interconnect;
+struct Cdrom;
 
 // --- CDROM Register Indices ---
 // How the 4 physical 8-bit registers (1F801800h-1F801803h) map based on Index register (1800h) value
@@ -58,7 +59,7 @@ typedef enum {
 
 // --- CDROM State Structure ---
 // Holds the complete state of the emulated CD-ROM drive and controller.
-typedef struct {
+typedef struct Cdrom {
     // --- Controller Registers/State ---
     /** @brief Currently selected register index (0-3), written via 1800h.0 */
     uint8_t index;
@@ -90,6 +91,13 @@ typedef struct {
     CdromState current_state;
     /** @brief Command code currently being processed */
     uint8_t pending_command;
+
+    // --- Timing & Scheduling --- <<< NEW SECTION
+    /** @brief Cycles until the current command is complete */
+    uint32_t cycles_until_event;
+    /** @brief The second part of a command to execute after a delay */
+    void (*pending_completion_handler)(struct Cdrom*);
+
     /** @brief Logical Block Address (LBA) target set by SetLoc command */
     uint32_t target_lba;
     // TODO: Add timers for command completion delays (Seek, Read, Init etc.)
@@ -152,6 +160,10 @@ void cdrom_write_register(Cdrom* cdrom, uint32_t addr, uint8_t value);
 bool cdrom_load_disc(Cdrom* cdrom, const char* bin_filename);
 
 // TODO: Add function prototype for stepping CDROM state machine/timing if needed
-// void cdrom_step(Cdrom* cdrom, uint32_t cycles);
-
+/**
+ * @brief Steps the CD-ROM state machine, handling command delays and completion.
+ * @param cdrom Pointer to the Cdrom state structure.
+ * @param cycles The number of CPU cycles that have passed since the last step.
+ */
+void cdrom_step(Cdrom* cdrom, uint32_t cycles);
 #endif // CDROM_H

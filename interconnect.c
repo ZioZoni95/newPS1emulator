@@ -44,6 +44,9 @@ void interconnect_init(Interconnect* inter, Bios* bios, Ram* ram) {
     dma_init(&inter->dma); // Initialize DMA controller state
     gpu_init(&inter->gpu); // Initialize GPU state (now contains Renderer)
 
+
+    cdrom_init(&inter->cdrom,inter);
+
     // Initialize Interrupt Controller state
     inter->irq_status = 0; // No pending interrupts
     inter->irq_mask = 0;   // All interrupts masked
@@ -51,7 +54,7 @@ void interconnect_init(Interconnect* inter, Bios* bios, Ram* ram) {
     // Initialize Timer state <<< ADD THIS CALL
     timers_init(&inter->timers_state, inter);
     
-    printf("Interconnect Initialized (BIOS, RAM, DMA, GPU, IRQ states set).\n");
+    printf("Interconnect Initialized (BIOS, RAM, DMA, GPU, CDROM, IRQ states set).\n");
 }
 
 

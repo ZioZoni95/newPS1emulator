@@ -10,6 +10,7 @@
 #include "dma.h"
 #include "gpu.h"
 #include "timers.h"
+#include "cdrom.h"
 
 
 /* --- Memory Map Definitions (Physical Addresses) ---
@@ -118,6 +119,7 @@ typedef struct Interconnect {
     uint16_t irq_mask;   // I_MASK Register state (enables/disables IRQs)
     // --------------------------------
     Timers timers_state; // <<< ADD THIS MEMBER
+    Cdrom cdrom;
 
     // Add pointers/state for other peripherals here later (Timers, SPU, CDROM, etc.)
 
