@@ -38,9 +38,10 @@ uint32_t mask_region(uint32_t addr) {
  * @param bios Pointer to the loaded Bios struct.
  * @param ram Pointer to the initialized Ram struct.
  */
-void interconnect_init(Interconnect* inter, Bios* bios, Ram* ram) {
+void interconnect_init(Interconnect* inter, Bios* bios, Ram* ram, Cdrom *cdrom) {
     inter->bios = bios;
     inter->ram = ram;
+    inter->cdrom = cdrom;
     dma_init(&inter->dma); // Initialize DMA controller state
     gpu_init(&inter->gpu); // Initialize GPU state (now contains Renderer)
 
@@ -51,7 +52,7 @@ void interconnect_init(Interconnect* inter, Bios* bios, Ram* ram) {
     // Initialize Timer state <<< ADD THIS CALL
     timers_init(&inter->timers_state, inter);
     
-    printf("Interconnect Initialized (BIOS, RAM, DMA, GPU, IRQ states set).\n");
+    printf("Interconnect Initialized (BIOS, RAM, DMA, GPU, IRQ, CDROM states set).\n");
 }
 
 
@@ -290,9 +291,7 @@ uint8_t interconnect_load8(Interconnect* inter, uint32_t address) {
     }
     // CDROM Registers (Example)
     if (physical_addr >= 0x1f801800 && physical_addr <= 0x1f801803) {
-        // printf("~ Read8 from CDROM Reg (0x%08x): Returning 0 (Placeholder)\n", physical_addr); // Often noisy
-        // TODO: Implement proper CDROM status/response reads
-        return 0; // Placeholder response
+        return cdrom_read_register(inter->cdrom, physical_addr);
     }
 
     // Expansion 1 Region
@@ -587,9 +586,8 @@ void interconnect_store8(Interconnect* inter, uint32_t address, uint8_t value) {
     }
     // CDROM Registers
     if (physical_addr >= 0x1f801800 && physical_addr <= 0x1f801803) {
-        printf("~ Write8 to CDROM Reg (0x%08x) = 0x%02x (Ignoring)\n", physical_addr, value);
-        // TODO: Implement CDROM register writes
-        return;
+        cdrom_write_register(inter->cdrom, physical_addr, value);
+        printf("~ Write8 to CDROM Reg (0x%08x) = 0x%02x (Ignoring)\n", physical_addr, value);        return;
     }
 
      // Expansion 2 Region

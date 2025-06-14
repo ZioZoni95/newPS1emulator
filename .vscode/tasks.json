@@ -1,0 +1,49 @@
+{
+    "version": "2.0.0",
+    "tasks": [
+      {
+        "label": "Build Emulator (Debug)", // Name for this build task
+        "type": "shell", // Execute as a shell command
+        "command": "gcc",
+        "args": [
+          // List all your .c source files
+          "${workspaceFolder}/main.c",
+          "${workspaceFolder}/cpu.c",
+          "${workspaceFolder}/bios.c",
+          "${workspaceFolder}/interconnect.c",
+          "${workspaceFolder}/ram.c",
+          "${workspaceFolder}/dma.c",
+          "${workspaceFolder}/gpu.c",
+          "${workspaceFolder}/renderer.c",
+          "${workspaceFolder}/vram.c",
+          "${workspaceFolder}/debugger.c",
+          "${workspaceFolder}/timers.c",
+          // Add any other .c files if you have more
+  
+          "-o", // Output flag
+          "${workspaceFolder}/myps1_emu", // Output executable name/path
+  
+          // Compiler Flags
+          "-std=c99", // Use C99 standard
+          "-Wall",    // Enable common warnings (recommended)
+          "-Wextra",  // Enable extra warnings (recommended)
+          "-g",       // <<< Crucial: Include debug symbols
+  
+          // Linker Flags (Libraries)
+          "-lSDL2",
+          "-lGL",
+          "-lGLEW",
+          "-lm"       // Link math library (for floor(), etc.)
+        ],
+        "group": {
+          "kind": "build",
+          "isDefault": true // Make this the default build task (Ctrl+Shift+B)
+        },
+        "problemMatcher": [
+          "$gcc" // Use the standard GCC problem matcher for errors/warnings
+        ],
+        "detail": "Compiles the PSX Emulator with debug symbols using GCC."
+      }
+    ]
+  }
+  

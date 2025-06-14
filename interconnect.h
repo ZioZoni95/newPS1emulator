@@ -10,6 +10,7 @@
 #include "dma.h"
 #include "gpu.h"
 #include "timers.h"
+#include "cdrom.h"
 
 
 /* --- Memory Map Definitions (Physical Addresses) ---
@@ -113,6 +114,7 @@ typedef struct Interconnect {
     Gpu gpu;    // GPU state (embedded directly)
     Dma dma;    // DMA controller state (embedded directly)
 
+    Cdrom *cdrom;
     // --- Interrupt Controller State ---
     uint16_t irq_status; // I_STAT Register state (reflects pending IRQs)
     uint16_t irq_mask;   // I_MASK Register state (enables/disables IRQs)
@@ -133,7 +135,7 @@ typedef struct Interconnect {
  * @param bios Pointer to the initialized Bios struct.
  * @param ram Pointer to the initialized Ram struct.
  */
-void interconnect_init(Interconnect* inter, Bios* bios, Ram* ram);
+void interconnect_init(Interconnect* inter, Bios* bios, Ram* ram, Cdrom *cdrom);
 
 /**
  * @brief Maps a CPU virtual address (KUSEG/KSEG0/KSEG1) to a physical address.

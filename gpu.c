@@ -8,6 +8,7 @@
 #include <stdlib.h> // For exit()
 #include <string.h> // For memset
 #include "renderer.h"
+#include "dma.h"
 // vram.h is implicitly included via gpu.h
 
 // --- Forward Declarations for GP0 Handlers (Internal linkage) ---

@@ -75,6 +75,6 @@ void dma_channel_done(DmaChannel* ch);
 uint32_t channel_get_control(DmaChannel* ch); // <-- Declaration added
 // Helper to set channel control register value
 void channel_set_control(DmaChannel* ch, uint32_t value); // <-- Declaration added
-
+void dma_execute_gpuread(Dma *dma, uint32_t transfer_size_word, uint8_t *vram, uint16_t x, uint16_t y, uint16_t w, uint16_t h);
 
 #endif // DMA_H

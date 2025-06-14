@@ -8,6 +8,7 @@
 #include <stdint.h>
 #include <stdbool.h>
 #include <stdio.h> // For FILE* type
+#include "iso9660.h"
 
 // Forward declaration
 struct Interconnect;
@@ -33,7 +34,7 @@ struct Interconnect;
 #define CDC_TEST        0x19 // Test commands (various subfunctions)
 #define CDC_GETID       0x1A // Get drive ID (returns SCEx string / No Disc / Licensed status)
 #define CDC_STOP        0x08 // Stop CD-DA playback/Read <<< Add this if missing
-
+#define CDC_SETMODE     0x0E
 #define CD_SECTOR_SIZE 2352 // Common raw sector size for Mode 2
 
 // --- Simple FIFO Placeholder ---
@@ -53,7 +54,8 @@ typedef enum {
     CD_STATE_IDLE,       // Doing nothing
     CD_STATE_CMD_EXEC,   // Processing a command (e.g., Seek, Init) that takes time
     CD_STATE_READING,    // Executing ReadN/ReadS, data transfer pending/active
-    CD_STATE_ERROR       // An error occurred on the last command
+    CD_STATE_ERROR,       // An error occurred on the last command
+    CD_STATE_GETID_PENDING
 } CdromState;
 
 // --- CDROM State Structure ---
@@ -74,6 +76,7 @@ typedef struct {
     Fifo8 param_fifo;
     /** @brief FIFO for command responses read via 1801h.1 */
     Fifo8 response_fifo;
+    
     // TODO: Add Data FIFO/Buffer for sector data (read via 1802h.2)
 
       // --- Data Buffer for Polled Reads --- <<< NEW SECTION
@@ -92,8 +95,8 @@ typedef struct {
     uint8_t pending_command;
     /** @brief Logical Block Address (LBA) target set by SetLoc command */
     uint32_t target_lba;
-    // TODO: Add timers for command completion delays (Seek, Read, Init etc.)
-
+    /** @brief delay timer */
+    uint32_t read_delay_timer;
     // --- Disc Handling ---
     /** @brief Flag indicating if a valid disc image is loaded */
     bool disc_present;
@@ -107,6 +110,13 @@ typedef struct {
 
     /** @brief File handle for the loaded .bin or .iso disc image */
     FILE* disc_file;
+    
+// --- Filesystem Information --- <<< ADD THIS NEW SECTION
+    /** @brief A copy of the disc's Primary Volume Descriptor */
+    IsoPrimaryVolumeDescriptor pvd;
+    /** @brief Flag indicating if the PVD was successfully read and is valid */
+    bool pvd_valid;
+
     // TODO: Add sector buffer, disc size LBA, track information
 
     /** @brief Pointer back to the interconnect for requesting interrupts */
@@ -152,6 +162,6 @@ void cdrom_write_register(Cdrom* cdrom, uint32_t addr, uint8_t value);
 bool cdrom_load_disc(Cdrom* cdrom, const char* bin_filename);
 
 // TODO: Add function prototype for stepping CDROM state machine/timing if needed
-// void cdrom_step(Cdrom* cdrom, uint32_t cycles);
+ void cdrom_step(Cdrom* cdrom, uint32_t cycles);
 
 #endif // CDROM_H

@@ -21,11 +21,29 @@
  #include "bios.h"
  #include "ram.h"
  #include "renderer.h" // Include renderer for type definitions and init/destroy
- 
+ #include "cdrom.h"
+
  int main(int argc, char *argv[]) {
+
+    // <<< ADD THIS BLOCK TO ENABLE FILE LOGGING >>>
+    // Redirect stdout and stderr to a log file
+    FILE *log_file = freopen("emulator_log.txt", "w", stdout);
+    if (log_file == NULL) {
+        perror("Failed to open log file for stdout");
+        return 1; // Exit if we can't create the log file
+    }
+    // Also redirect stderr to the same file
+    freopen("emulator_log.txt", "a", stderr);
+    setbuf(stdout, NULL); // Disable buffering to see logs immediately
+    setbuf(stderr, NULL);
+    printf("--- Log Started ---\n");
+    // <<< END OF LOGGING BLOCK >>>
+
+    
      // --- Configuration ---
      // Use command-line argument for BIOS path, otherwise default.
      const char* bios_path = (argc > 1) ? argv[1] : "roms/SCPH1001.BIN"; // Default path
+     const char *disk_path = (argc > 2) ? argv[2] : "games";
      const uint32_t cycles_per_frame = 300000; // Arbitrary number of CPU cycles per frame loop iteration
  
      printf("--- ZoniStation One Emulator ---\n");
@@ -100,6 +118,7 @@
      Ram ram_memory;
      Interconnect interconnect_state; // Contains Gpu and Dma instances directly
      Cpu cpu_state;
+     Cdrom cdrom_drive;
  
      // 1. Initialize RAM (Fill with default pattern)
      printf("  Initializing RAM...\n");
@@ -114,10 +133,16 @@
          SDL_Quit();
          return 1; // Exit if BIOS loading fails
      }
+
+     //NEW: CDROM PRIMA DI INTERCONNECT
+    printf("  Initializing CD-ROM drive...\n");
+    cdrom_init(&cdrom_drive, &interconnect_state);
+    cdrom_load_disc(&cdrom_drive, disk_path);
+
  
      // 3. Initialize Interconnect (Connects BIOS and RAM, also calls internal gpu_init/dma_init)
      printf("  Initializing Interconnect...\n");
-     interconnect_init(&interconnect_state, &bios_data, &ram_memory); //
+     interconnect_init(&interconnect_state, &bios_data, &ram_memory, &cdrom_drive); //
  
      // 4. Initialize the Renderer *using the instance inside the Interconnect's GPU*
      //    This ensures the correct renderer state is initialized.
@@ -175,6 +200,10 @@
              cpu_run_next_instruction(&cpu_state);
          }
          total_cycles += cycles_per_frame;
+
+         //step per le periferiche per ogni ciclo di clock
+        timers_step(&interconnect_state.timers_state, 1);
+        cdrom_step(&cdrom_drive, 1);
          // printf("Cycles complete. Total: %llu\n", total_cycles); // Very verbose!
  
  

@@ -13,6 +13,9 @@
 // Offset 12 skips Sync. This part needs verification against hardware/game needs.
 #define CD_MODE_RAWISH_SIZE 2340
 #define CD_MODE_RAWISH_OFFSET 12
+#define CDROM_READ_DELAY_CYCLES 50000
+#define CDROM_GETID_DELAY_CYCLES 10000
+
 
 // --- CDROM Commands (Partial List) ---
 #define CDC_GETSTAT     0x01
@@ -177,42 +180,16 @@ static void cmd_init(Cdrom* cdrom) {
 
 static void cmd_get_id(Cdrom* cdrom) {
     printf("~ CDROM CMD: GetID (0x1A)\n");
-    cdrom->current_state = CD_STATE_CMD_EXEC;
     cdrom->status |= STAT_BUSY;
+
 
     fifo_clear(&cdrom->response_fifo);
     update_status_register(cdrom);
     fifo_push(&cdrom->response_fifo, cdrom->status);
     trigger_interrupt(cdrom, 3);
 
-    // TODO: Add realistic GetID delay
-
-    if (!cdrom->disc_present) {
-        printf("  CDROM GetID: Responding No Disc (Error INT5)\n");
-        uint8_t error_status = (cdrom->index & 0x03) | 0x10; // Nocash says STAT byte = 0x10 for No Disc Error
-        fifo_push(&cdrom->response_fifo, error_status);
-        fifo_push(&cdrom->response_fifo, 0x80); // Error Code: No Disc
-        for(int i = 0; i < 6; ++i) fifo_push(&cdrom->response_fifo, 0); // Pad response
-        trigger_interrupt(cdrom, 5);
-        cdrom->current_state = CD_STATE_ERROR;
-        cdrom->status = error_status;
-        cdrom->status &= ~STAT_BUSY;
-    } else {
-        printf("  CDROM GetID: Responding Licensed Disc (SCEA)\n");
-        uint8_t resp[8];
-        update_status_register(cdrom);
-        uint8_t success_status = (cdrom->index & 0x03) | STAT_MOTORON; // Assume motor on
-        resp[0] = success_status;
-        resp[1] = 0x02; // Status: Licensed Game Disc
-        resp[2] = 0x00; // Disc Type: CD-ROM XA
-        resp[3] = 0x00; // System Area
-        resp[4] = 'S'; resp[5] = 'C'; resp[6] = 'E'; resp[7] = 'A';
-        for(int i = 0; i < 8; ++i) fifo_push(&cdrom->response_fifo, resp[i]);
-        trigger_interrupt(cdrom, 2);
-        cdrom->current_state = CD_STATE_IDLE;
-        cdrom->status = success_status;
-        cdrom->status &= ~STAT_BUSY;
-    }
+    cdrom->current_state = CD_STATE_GETID_PENDING;
+    cdrom->read_delay_timer = CDROM_GETID_DELAY_CYCLES;
 }
 
 static void cmd_set_loc(Cdrom* cdrom) {
@@ -259,13 +236,13 @@ static void cmd_set_loc(Cdrom* cdrom) {
 // <<< UPDATED FUNCTION >>>
 /** @brief Command 0x06: ReadN. Reads normal sectors starting at target LBA. */
 static void cmd_read_n(Cdrom* cdrom) {
-    // printf("~ CDROM CMD: ReadN (0x06) from LBA %u\n", cdrom->target_lba);
+     printf("~ CDROM CMD: ReadN (0x06) from LBA %u\n", cdrom->target_lba);
 
     // 1. Check Disc Presence
     if (!cdrom->disc_present || !cdrom->disc_file) {
          fprintf(stderr, "CDROM ReadN Error: No disc loaded.\n");
-         fifo_clear(&cdrom->response_fifo);
          uint8_t error_status = (cdrom->index & 0x03) | 0x10; // Status for No Disc Error
+         fifo_clear(&cdrom->response_fifo);
          fifo_push(&cdrom->response_fifo, error_status);
          fifo_push(&cdrom->response_fifo, 0x80); // Error Code: No Disc
          trigger_interrupt(cdrom, 5);
@@ -277,9 +254,10 @@ static void cmd_read_n(Cdrom* cdrom) {
     // 2. Acknowledge Command & Set State
     cdrom->current_state = CD_STATE_READING;
     cdrom->status |= STAT_BUSY;
-    update_status_register(cdrom);
+    cdrom->read_delay_timer = CDROM_READ_DELAY_CYCLES;
 
     fifo_clear(&cdrom->response_fifo);
+    update_status_register(cdrom);
     fifo_push(&cdrom->response_fifo, cdrom->status); // Push initial status (Busy)
     trigger_interrupt(cdrom, 3); // INT3: Response Ready
 
@@ -607,19 +585,59 @@ void cdrom_init(Cdrom* cdrom, struct Interconnect* inter) {
     printf("  CDROM Initial Status: 0x%02x\n", cdrom->status);
 }
 
+/**
+ * @brief Attempts to load a disc image file and its filesystem info.
+ * @param cdrom Pointer to the Cdrom state structure.
+ * @param bin_filename Path to the .bin or .iso file.
+ * @return True if successful, false otherwise.
+ */
 bool cdrom_load_disc(Cdrom* cdrom, const char* bin_filename) {
-    if (cdrom->disc_file) { fclose(cdrom->disc_file); cdrom->disc_file = NULL; }
+    if (cdrom->disc_file) {
+        fclose(cdrom->disc_file);
+        cdrom->disc_file = NULL;
+    }
     cdrom->disc_present = false;
+    cdrom->pvd_valid = false; // <<< ADD THIS LINE
     cdrom->is_cd_da = false;
+
     printf("CDROM: Attempting to load disc image '%s'\n", bin_filename);
     cdrom->disc_file = fopen(bin_filename, "rb");
+
     if (!cdrom->disc_file) {
         perror("CDROM Error: Failed to open disc image");
         return false;
     }
+
     printf("CDROM: Disc image loaded successfully.\n");
     cdrom->disc_present = true;
     cdrom->current_state = CD_STATE_IDLE;
+
+// Attempt to read the PVD
+    if (iso_read_pvd(cdrom, &cdrom->pvd)) {
+        cdrom->pvd_valid = true;
+        printf("CDROM: Successfully parsed ISO9660 Primary Volume Descriptor.\n");
+
+        // --- NEW: Find SYSTEM.CNF ---
+        // The root directory record is conveniently located inside the PVD itself.
+        IsoDirectoryRecord* root_record = (IsoDirectoryRecord*)cdrom->pvd.root_directory_record;
+
+        // We need a buffer to hold the record we find, because its size is variable.
+        uint8_t found_record_buffer[256];
+        IsoDirectoryRecord* system_cnf_record = (IsoDirectoryRecord*)found_record_buffer;
+
+        // Search for the file. Note the ";1" is the file version for ISO9660.
+        if (iso_find_file(cdrom, root_record, "SYSTEM.CNF;1", system_cnf_record)) {
+             printf("CDROM: Found SYSTEM.CNF at LBA %u, size %u bytes.\n",
+                    system_cnf_record->extent_location_le,
+                    system_cnf_record->data_length_le);
+        }
+        // --- End of new section ---
+
+    } else {
+        cdrom->pvd_valid = false;
+        fprintf(stderr, "CDROM Warning: Could not find a valid ISO9660 PVD. This may not be a game disc.\n");
+    }
+
     return true;
 }
 
@@ -701,5 +719,69 @@ void cdrom_write_register(Cdrom* cdrom, uint32_t addr, uint8_t value) {
                  if (value == 0x40) cdrom->interrupt_flags = 0;
              } else fprintf(stderr, "CDROM Write Error: Write to 1803h with Index %d != 0 or 1\n", reg_index);
             break;
+    }
+}
+
+/**
+ * @brief Steps the CDROM state machine forward in time.
+ */
+void cdrom_step(Cdrom* cdrom, uint32_t cycles) {
+    // Decrement any active timers
+    if (cdrom->read_delay_timer > 0) {
+        cdrom->read_delay_timer -= (cycles < cdrom->read_delay_timer) ? cycles : cdrom->read_delay_timer;
+    }
+
+    // Handle completion of a ReadN command
+    if (cdrom->current_state == CD_STATE_READING && cdrom->read_delay_timer == 0) {
+        printf("  CDROM ReadN: Completing read for LBA %u\n", cdrom->target_lba);
+        
+        long long offset = (long long)cdrom->target_lba * CD_RAW_SECTOR_SIZE;
+        uint8_t raw_sector_buffer[CD_RAW_SECTOR_SIZE];
+
+        if (fseek(cdrom->disc_file, (long)offset, SEEK_SET) != 0) { /* ... error handling ... */ return; }
+        if (fread(raw_sector_buffer, 1, CD_RAW_SECTOR_SIZE, cdrom->disc_file) != CD_RAW_SECTOR_SIZE) { /* ... error handling ... */ return; }
+
+        uint32_t bytes_to_copy = cdrom->sector_size_is_2340 ? CD_MODE_RAWISH_SIZE : CD_USER_DATA_SIZE;
+        uint32_t copy_offset_in_raw = cdrom->sector_size_is_2340 ? CD_MODE_RAWISH_OFFSET : CD_MODE2_FORM1_HEADER_SIZE;
+        
+        memcpy(cdrom->data_buffer, raw_sector_buffer + copy_offset_in_raw, bytes_to_copy);
+        cdrom->data_buffer_count = bytes_to_copy;
+        cdrom->data_buffer_read_ptr = 0;
+
+        trigger_interrupt(cdrom, 1); // INT1: Data Ready
+
+        update_status_register(cdrom);
+        cdrom->status &= ~STAT_BUSY;
+        fifo_push(&cdrom->response_fifo, cdrom->status);
+        trigger_interrupt(cdrom, 2); // INT2: Command Complete
+
+        cdrom->target_lba++;
+        cdrom->current_state = CD_STATE_IDLE;
+    }
+
+    // Handle completion of a GetID command
+    if (cdrom->current_state == CD_STATE_GETID_PENDING && cdrom->read_delay_timer == 0) {
+        cdrom->status &= ~STAT_BUSY; // Command is no longer busy
+
+        if (!cdrom->disc_present) {
+            printf("  CDROM GetID: Responding No Disc (Error INT5)\n");
+            fifo_push(&cdrom->response_fifo, cdrom->status);
+            fifo_push(&cdrom->response_fifo, 0x80); // Error Code: No Disc
+            for (int i = 0; i < 6; ++i) fifo_push(&cdrom->response_fifo, 0);
+            trigger_interrupt(cdrom, 5);
+            cdrom->current_state = CD_STATE_ERROR;
+        } else {
+            printf("  CDROM GetID: Responding Licensed Disc (SCEA)\n");
+            uint8_t resp[8];
+            update_status_register(cdrom);
+            resp[0] = cdrom->status;
+            resp[1] = 0x02; // Status: Licensed Game Disc
+            resp[2] = 0x00; // Disc Type: CD-ROM XA
+            resp[3] = 0x00; // System Area
+            resp[4] = 'S'; resp[5] = 'C'; resp[6] = 'E'; resp[7] = 'A';
+            for (int i = 0; i < 8; ++i) fifo_push(&cdrom->response_fifo, resp[i]);
+            trigger_interrupt(cdrom, 2); // INT2: Command Complete
+            cdrom->current_state = CD_STATE_IDLE;
+        }
     }
 }
