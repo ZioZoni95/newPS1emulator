@@ -418,7 +418,7 @@ static void cmd_test(Cdrom* cdrom) {
 
     // Second Response (INT2/INT5 - Result/Completion)
     // TODO: Add realistic delay
-
+//edited
     switch (sub_command) {
         case 0x20: { // Get BIOS Date / Version ID
             printf("  CDROM Test(0x20): Get BIOS Date/Version\n");
