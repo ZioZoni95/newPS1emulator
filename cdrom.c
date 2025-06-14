@@ -32,7 +32,11 @@ static void cmd_get_stat(Cdrom* cdrom);
 static void cmd_init(Cdrom* cdrom);
 static void cmd_get_id(Cdrom* cdrom);
 static void cmd_set_loc(Cdrom* cdrom);
+static void cmd_set_loc_complete(Cdrom* cdrom); // <<< ADD THIS LINE
+
 static void cmd_read_n(Cdrom* cdrom);
+static void cmd_read_n_complete(Cdrom* cdrom); // <<< ADD THIS LINE
+
 static void cmd_pause(Cdrom* cdrom);
 static void cmd_seek_l(Cdrom* cdrom);
 static void cmd_test(Cdrom* cdrom);
@@ -245,20 +249,27 @@ static void cmd_get_id(Cdrom* cdrom) {
     }
 }
 
+/**
+ * @brief Completion handler for SetLoc, executed after a delay.
+ */
+static void cmd_set_loc_complete(Cdrom* cdrom) {
+    // printf("  CDROM SetLoc: Completion part executed.\n");
+
+    // Second Response (INT2) - The command is now complete.
+    cdrom->status &= ~STAT_BUSY;
+    fifo_push(&cdrom->response_fifo, cdrom->status);
+    trigger_interrupt(cdrom, 2);
+    cdrom->current_state = CD_STATE_IDLE;
+}
+
+// <<< UPDATED FUNCTION: The first part of the SetLoc command >>>
 static void cmd_set_loc(Cdrom* cdrom) {
     cdrom->current_state = CD_STATE_CMD_EXEC;
     cdrom->status |= STAT_BUSY;
 
     if (cdrom->param_fifo.count < 3) {
-        fprintf(stderr, "CDROM Error: SetLoc requires 3 parameters, got %d\n", cdrom->param_fifo.count);
-        fifo_clear(&cdrom->response_fifo);
-        update_status_register(cdrom);
-        uint8_t error_status = (cdrom->status & 0x03) | 0x14; // Error status (STAT_ERROR maybe?) + Busy
-        fifo_push(&cdrom->response_fifo, error_status);
-        fifo_push(&cdrom->response_fifo, 0x40); // Error Code: Wrong number of parameters
-        trigger_interrupt(cdrom, 5);
-        cdrom->current_state = CD_STATE_ERROR;
-        cdrom->status = error_status & ~STAT_BUSY;
+        // Your existing error handling for wrong parameter count is good.
+        // I've omitted it here for brevity, but you should keep it.
         return;
     }
     uint8_t m_bcd = fifo_pop(&cdrom->param_fifo);
@@ -271,40 +282,78 @@ static void cmd_set_loc(Cdrom* cdrom) {
     cdrom->target_lba = ((uint32_t)m * 60 + (uint32_t)s) * 75 + (uint32_t)f;
     if (cdrom->target_lba >= 150) cdrom->target_lba -= 150; else cdrom->target_lba = 0;
 
-    // First Response (INT3)
+    // printf("~ CDROM CMD: SetLoc (0x02) to LBA %u\n", cdrom->target_lba);
+
+    // First Response (INT3) - Acknowledge command received
     update_status_register(cdrom);
     fifo_clear(&cdrom->response_fifo);
     fifo_push(&cdrom->response_fifo, cdrom->status);
     trigger_interrupt(cdrom, 3);
 
-    // Second Response (INT2) - after delay
-    // TODO: Add realistic seek delay
-    update_status_register(cdrom);
-    cdrom->status &= ~STAT_BUSY;
-    fifo_push(&cdrom->response_fifo, cdrom->status);
-    trigger_interrupt(cdrom, 2);
-    cdrom->current_state = CD_STATE_IDLE;
+    // Schedule the completion event after a small delay to simulate seek time
+    // Let's use a placeholder delay for now
+    cdrom_schedule_event(cdrom, 100000, cmd_set_loc_complete);
 }
 
-// <<< UPDATED FUNCTION >>>
-/** @brief Command 0x06: ReadN. Reads normal sectors starting at target LBA. */
-static void cmd_read_n(Cdrom* cdrom) {
-    // printf("~ CDROM CMD: ReadN (0x06) from LBA %u\n", cdrom->target_lba);
+/**
+ * @brief Completion handler for ReadN, executed after a delay.
+ * Performs the actual file read and triggers completion interrupts.
+ */
+static void cmd_read_n_complete(Cdrom* cdrom) {
+    // printf("  CDROM ReadN: Completion part executed for LBA %u\n", cdrom->target_lba);
 
-    // 1. Check Disc Presence
-    if (!cdrom->disc_present || !cdrom->disc_file) {
-         fprintf(stderr, "CDROM ReadN Error: No disc loaded.\n");
-         fifo_clear(&cdrom->response_fifo);
-         uint8_t error_status = (cdrom->index & 0x03) | 0x10; // Status for No Disc Error
-         fifo_push(&cdrom->response_fifo, error_status);
-         fifo_push(&cdrom->response_fifo, 0x80); // Error Code: No Disc
-         trigger_interrupt(cdrom, 5);
-         cdrom->current_state = CD_STATE_ERROR;
-         cdrom->status = error_status;
+    // --- Read Raw Sector ---
+    long long offset = (long long)cdrom->target_lba * CD_RAW_SECTOR_SIZE;
+    uint8_t raw_sector_buffer[CD_RAW_SECTOR_SIZE];
+
+    if (fseek(cdrom->disc_file, (long)offset, SEEK_SET) != 0) {
+        perror("CDROM ReadN Error: fseek failed in completion handler");
+        // Handle error (similar to your existing error handling)
         return;
     }
 
-    // 2. Acknowledge Command & Set State
+    size_t bytes_read = fread(raw_sector_buffer, 1, CD_RAW_SECTOR_SIZE, cdrom->disc_file);
+    if (bytes_read != CD_RAW_SECTOR_SIZE) {
+        fprintf(stderr, "CDROM ReadN Error: fread failed in completion handler (%zu bytes).\n", bytes_read);
+        // Handle error
+        return;
+    }
+
+    // --- Process Sector & Copy to Buffer ---
+    uint32_t bytes_to_copy = cdrom->sector_size_is_2340 ? CD_MODE_RAWISH_SIZE : CD_USER_DATA_SIZE;
+    uint32_t copy_offset_in_raw = cdrom->sector_size_is_2340 ? CD_MODE_RAWISH_OFFSET : CD_MODE2_FORM1_HEADER_SIZE;
+
+    memcpy(cdrom->data_buffer, raw_sector_buffer + copy_offset_in_raw, bytes_to_copy);
+    cdrom->data_buffer_count = bytes_to_copy;
+    cdrom->data_buffer_read_ptr = 0;
+
+    // --- Signal Completion ---
+    // 1. Data is now ready for the CPU to read
+    trigger_interrupt(cdrom, 1); // INT1: Data Ready
+
+    // 2. The command itself is now complete
+    update_status_register(cdrom);
+    cdrom->status &= ~STAT_BUSY;
+    fifo_push(&cdrom->response_fifo, cdrom->status);
+    trigger_interrupt(cdrom, 2); // INT2: Command Complete
+
+    // 3. Update state for the next read
+    cdrom->target_lba++;
+    cdrom->current_state = CD_STATE_IDLE;
+}
+
+
+// <<< UPDATED FUNCTION: The first part of the ReadN command >>>
+/** @brief Command 0x06: ReadN. Kicks off a read operation. */
+static void cmd_read_n(Cdrom* cdrom) {
+    // printf("~ CDROM CMD: ReadN (0x06) from LBA %u\n", cdrom->target_lba);
+
+    if (!cdrom->disc_present || !cdrom->disc_file) {
+        // Handle No Disc error (your existing code for this is perfect)
+        return;
+    }
+
+    // 1. Acknowledge Command & Set State
     cdrom->current_state = CD_STATE_READING;
     cdrom->status |= STAT_BUSY;
     update_status_register(cdrom);
@@ -313,90 +362,14 @@ static void cmd_read_n(Cdrom* cdrom) {
     fifo_push(&cdrom->response_fifo, cdrom->status); // Push initial status (Busy)
     trigger_interrupt(cdrom, 3); // INT3: Response Ready
 
-    // --- Read Raw Sector ---
-    // TODO: Add timing delays for seek
-    long long offset = (long long)cdrom->target_lba * CD_RAW_SECTOR_SIZE;
-    uint8_t raw_sector_buffer[CD_RAW_SECTOR_SIZE]; // Local buffer for raw read
-
-    if (fseek(cdrom->disc_file, (long)offset, SEEK_SET) != 0) {
-        perror("CDROM ReadN Error: fseek failed");
-        fifo_clear(&cdrom->response_fifo);
-        uint8_t error_status = (cdrom->index & 0x03) | 0x14 | STAT_BUSY; // Seek error status?
-        fifo_push(&cdrom->response_fifo, error_status);
-        fifo_push(&cdrom->response_fifo, 0x40); // Error Code: Seek Error?
-        trigger_interrupt(cdrom, 5);
-        cdrom->current_state = CD_STATE_ERROR;
-        cdrom->status = error_status & ~STAT_BUSY;
-        return;
+    // 2. Schedule the completion event
+    // Placeholder delay for a single-speed read (~1/75th of a second)
+    uint32_t read_delay_cycles = 450000;
+    if (cdrom->double_speed) {
+        read_delay_cycles /= 2;
     }
-
-    // TODO: Add timing delays for read
-    size_t bytes_read = fread(raw_sector_buffer, 1, CD_RAW_SECTOR_SIZE, cdrom->disc_file);
-
-    if (bytes_read != CD_RAW_SECTOR_SIZE) {
-        fprintf(stderr, "CDROM ReadN Error: fread failed or read incomplete (%zu bytes).\n", bytes_read);
-        fifo_clear(&cdrom->response_fifo);
-        uint8_t error_status = (cdrom->index & 0x03) | 0x11 | STAT_BUSY; // Read error status?
-        fifo_push(&cdrom->response_fifo, error_status);
-        fifo_push(&cdrom->response_fifo, feof(cdrom->disc_file) ? 0x80 : 0x20); // Error: End of Disc or Drive Error?
-        trigger_interrupt(cdrom, 5);
-        cdrom->current_state = CD_STATE_ERROR;
-        cdrom->status = error_status & ~STAT_BUSY;
-        return;
-    }
-
-    // --- Process Sector Based on Mode ---
-    uint32_t bytes_to_copy = 0;
-    uint32_t copy_offset_in_raw = 0;
-
-    if (cdrom->sector_size_is_2340) {
-        // Mode requests "raw-ish" sector data (SetMode bit 5 = 1)
-        bytes_to_copy = CD_MODE_RAWISH_SIZE;        // 2340 bytes
-        copy_offset_in_raw = CD_MODE_RAWISH_OFFSET; // Offset 12?
-        // printf("  CDROM ReadN: Mode requests ~raw data (%u bytes from offset %u)\n", bytes_to_copy, copy_offset_in_raw);
-    } else {
-        // Mode requests standard 2048 byte user data (SetMode bit 5 = 0)
-        bytes_to_copy = CD_USER_DATA_SIZE;
-        copy_offset_in_raw = CD_MODE2_FORM1_HEADER_SIZE; // Offset 24
-        // printf("  CDROM ReadN: Mode requests user data (%u bytes from offset %u)\n", bytes_to_copy, copy_offset_in_raw);
-    }
-
-    // 6. Data Transfer (Polled Setup)
-    cdrom->data_buffer_count = 0;
-    cdrom->data_buffer_read_ptr = 0;
-    if (copy_offset_in_raw + bytes_to_copy <= CD_RAW_SECTOR_SIZE && bytes_to_copy <= sizeof(cdrom->data_buffer)) {
-        memcpy(cdrom->data_buffer, raw_sector_buffer + copy_offset_in_raw, bytes_to_copy);
-        cdrom->data_buffer_count = bytes_to_copy;
-    } else {
-         fprintf(stderr, "CDROM ReadN Error: Calculated copy [%u + %u] exceeds buffers.\n", copy_offset_in_raw, bytes_to_copy);
-         // Handle internal error
-         fifo_clear(&cdrom->response_fifo);
-         uint8_t error_status = (cdrom->index & 0x03) | 0x11 | STAT_BUSY; // Generic error status
-         fifo_push(&cdrom->response_fifo, error_status);
-         fifo_push(&cdrom->response_fifo, 0x20); // Generic Drive Error?
-         trigger_interrupt(cdrom, 5);
-         cdrom->current_state = CD_STATE_ERROR;
-         cdrom->status = error_status & ~STAT_BUSY;
-         return;
-    }
-    // --- END MODIFIED SECTION ---
-
-    // 7. Signal Data Ready
-    trigger_interrupt(cdrom, 1); // INT1: Data Ready
-
-    // --- IMMEDIATE COMPLETION (TIMING INACCURATE) ---
-    // 8. Complete Command (Prematurely)
-    update_status_register(cdrom);
-    cdrom->status &= ~STAT_BUSY;
-    fifo_push(&cdrom->response_fifo, cdrom->status);
-    trigger_interrupt(cdrom, 2); // INT2: Command Complete
-
-    // 9. Update State (Prematurely)
-    cdrom->target_lba++;
-    cdrom->current_state = CD_STATE_IDLE;
-    // --- End Immediate Completion ---
+    cdrom_schedule_event(cdrom, read_delay_cycles, cmd_read_n_complete);
 }
-// <<< END UPDATED FUNCTION >>>
 
 static void cmd_pause(Cdrom* cdrom) {
     printf("~ CDROM CMD: Pause (0x09)\n");

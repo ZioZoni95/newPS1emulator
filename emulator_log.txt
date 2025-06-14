@@ -43,8 +43,8 @@ Attribute 'vertex_color' found at location 1.
 Color VBO linked to vertex shader attribute location 1.
 VAO and VBO unbound.
 Renderer Initialized Successfully.
-CDROM: Attempting to load disc image 'games/'
-Warning: Could not load game disc. Running BIOS only.
+CDROM: Attempting to load disc image 'games/Crash Bandicoot.bin'
+CDROM: Disc image loaded successfully.
   Initializing CPU...
 Initializing CPU...
   Initializing I-Cache...
@@ -23858,6 +23858,24 @@ GPU: Display Mode set (GP1 Cmd 0x08)
 ~ Write32 to IRQ_MASK: Value=0x00000005 -> I_MASK=0x0005
 ~ Read32 from IRQ_MASK (0x1f801074): Returning 0x0005
 ~ Write32 to IRQ_MASK: Value=0x0000000d -> I_MASK=0x000d
+SYSCALL instruction executed (PC=0x8005aa14)
+!!! CPU Exception: Cause=0x08, PC=0x8005aa14, InDelaySlot=0 !!!
+~ Read32 from IRQ_MASK (0x1f801074): Returning 0x000d
+~ Read32 from IRQ_STATUS (0x1f801070): Returning 0x0000
+~ Read32 from IRQ_MASK (0x1f801074): Returning 0x000d
+~ Read32 from IRQ_STATUS (0x1f801070): Returning 0x0000
+SYSCALL instruction executed (PC=0x8005aa14)
+!!! CPU Exception: Cause=0x08, PC=0x8005aa14, InDelaySlot=0 !!!
+~ Read32 from IRQ_MASK (0x1f801074): Returning 0x000d
+~ Read32 from IRQ_STATUS (0x1f801070): Returning 0x0000
+~ Read32 from IRQ_MASK (0x1f801074): Returning 0x000d
+~ Read32 from IRQ_STATUS (0x1f801070): Returning 0x0000
+SYSCALL instruction executed (PC=0x8005aa14)
+!!! CPU Exception: Cause=0x08, PC=0x8005aa14, InDelaySlot=0 !!!
+~ Read32 from IRQ_MASK (0x1f801074): Returning 0x000d
+~ Read32 from IRQ_STATUS (0x1f801070): Returning 0x0000
+~ Read32 from IRQ_MASK (0x1f801074): Returning 0x000d
+~ Read32 from IRQ_STATUS (0x1f801070): Returning 0x0000
 SYSCALL instruction executed (PC=0x8005aa14)
 !!! CPU Exception: Cause=0x08, PC=0x8005aa14, InDelaySlot=0 !!!
 ~ Read32 from IRQ_MASK (0x1f801074): Returning 0x000d

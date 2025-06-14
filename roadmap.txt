@@ -10,16 +10,18 @@ Phase 1: Foundation (Mostly Done)
 ✅ Basic OpenGL Renderer (Guide Section 5): Implemented.
 ⏩ Debugger (Guide Section 7): Skipped (for now).
 ✅ CPU Instruction Cache (Guide Section 8): Implemented.
-Phase 2: Core System & Peripheral Emulation (Started)
 
-⏳ Timers & Accurate Interrupts: Started (Structs defined, init done, basic step logic implemented, register access routed, CPU IRQ check refined). Further accuracy improvements pending.
-⏳ CD-ROM Drive Emulation: Started (Structs defined, init done, register access routed). Command logic implementation is next.
+Phase 2: Core System & Peripheral Emulation (In Progress)
+
+🎯 Timers & Accurate Interrupts: In Progress. Current focus is implementing timer counting and VBLANK interrupt generation to resolve BIOS hang.
+✋ CD-ROM Drive Emulation: Blocked by Timers. Command logic implementation is next, but requires working VBLANK interrupts to proceed past the BIOS loop.
 ❌ Controller & Memory Card Emulation: Not Started.
 ❌ SPU (Sound Processing Unit): Not Started.
 ❌ DMA Enhancements (Accuracy, Other Channels): Not Started.
+
 Phase 3: Advanced GPU & System Refinement (Not Started)
 
 ❌ GPU - Texturing & Advanced VRAM: Not Started.
 ❌ GPU - GTE (Geometry Transformation Engine): Not Started.
 ❌ GPU - Timings & Video Output: Not Started.
-❌ Accuracy, Compatibility & Optimization: Not Started
+❌ Accuracy, Compatibility & Optimization: Not Started.

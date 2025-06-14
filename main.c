@@ -139,7 +139,7 @@ int main(int argc, char *argv[]) {
     // 5. Load a game disc into the CD-ROM drive
     // NOTE: Replace "path/to/your/game.bin" with an actual game image.
     // If no disc is loaded, the emulator will just run the BIOS.
-    if (!cdrom_load_disc(&interconnect_state.cdrom, "games/")) {
+    if (!cdrom_load_disc(&interconnect_state.cdrom, "games/Crash Bandicoot.bin")) {
         printf("Warning: Could not load game disc. Running BIOS only.\n");
     }
 
