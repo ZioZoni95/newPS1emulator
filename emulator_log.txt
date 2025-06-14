@@ -14,10 +14,11 @@ RAM Initialized (2097152 bytes, filled with 0xCA).
 BIOS loaded successfully from roms/SCPH1001.BIN (524288 bytes)
   Initializing CD-ROM drive...
 Initializing CD-ROM...
-  CDROM Initial Status: 0x0c
+  CDROM Initial Status: 0x18
 CDROM: Attempting to load disc image 'games/Crash Bandicoot.bin'
 CDROM: Disc image loaded successfully.
 ISO9660: Reading Primary Volume Descriptor at sector 16...
+ISO9660: Successfully read sector 16.
   Initializing Interconnect...
 DMA Initialized. DPCR=0x07654321, Channels initialized.
 GPU Initializing...
@@ -23880,96 +23881,6 @@ SYSCALL instruction executed (PC=0x8005aa14)
 ~ CDROM CMD: Test (0x19), Subcommand: 0x20
   CDROM Test(0x20): Get BIOS Date/Version
 ~ Write8 to CDROM Reg (0x1f801801) = 0x19 (Ignoring)
-SYSCALL instruction executed (PC=0x8005aa14)
-!!! CPU Exception: Cause=0x08, PC=0x8005aa14, InDelaySlot=0 !!!
-~ Read32 from IRQ_MASK (0x1f801074): Returning 0x000d
-~ Read32 from IRQ_STATUS (0x1f801070): Returning 0x0000
-~ Read32 from IRQ_MASK (0x1f801074): Returning 0x000d
-~ Read32 from IRQ_STATUS (0x1f801070): Returning 0x0000
-SYSCALL instruction executed (PC=0x8005aa14)
-!!! CPU Exception: Cause=0x08, PC=0x8005aa14, InDelaySlot=0 !!!
-~ Read32 from IRQ_MASK (0x1f801074): Returning 0x000d
-~ Read32 from IRQ_STATUS (0x1f801070): Returning 0x0000
-~ Read32 from IRQ_MASK (0x1f801074): Returning 0x000d
-~ Read32 from IRQ_STATUS (0x1f801070): Returning 0x0000
-SYSCALL instruction executed (PC=0x8005aa14)
-!!! CPU Exception: Cause=0x08, PC=0x8005aa14, InDelaySlot=0 !!!
-~ Read32 from IRQ_MASK (0x1f801074): Returning 0x000d
-~ Read32 from IRQ_STATUS (0x1f801070): Returning 0x0000
-~ Read32 from IRQ_MASK (0x1f801074): Returning 0x000d
-~ Read32 from IRQ_STATUS (0x1f801070): Returning 0x0000
-SYSCALL instruction executed (PC=0x8005aa14)
-!!! CPU Exception: Cause=0x08, PC=0x8005aa14, InDelaySlot=0 !!!
-~ Read32 from IRQ_MASK (0x1f801074): Returning 0x000d
-~ Read32 from IRQ_STATUS (0x1f801070): Returning 0x0000
-~ Read32 from IRQ_MASK (0x1f801074): Returning 0x000d
-~ Read32 from IRQ_STATUS (0x1f801070): Returning 0x0000
-SYSCALL instruction executed (PC=0x8005aa14)
-!!! CPU Exception: Cause=0x08, PC=0x8005aa14, InDelaySlot=0 !!!
-~ Read32 from IRQ_MASK (0x1f801074): Returning 0x000d
-~ Read32 from IRQ_STATUS (0x1f801070): Returning 0x0000
-~ Read32 from IRQ_MASK (0x1f801074): Returning 0x000d
-~ Read32 from IRQ_STATUS (0x1f801070): Returning 0x0000
-SYSCALL instruction executed (PC=0x8005aa14)
-!!! CPU Exception: Cause=0x08, PC=0x8005aa14, InDelaySlot=0 !!!
-~ Read32 from IRQ_MASK (0x1f801074): Returning 0x000d
-~ Read32 from IRQ_STATUS (0x1f801070): Returning 0x0000
-~ Read32 from IRQ_MASK (0x1f801074): Returning 0x000d
-~ Read32 from IRQ_STATUS (0x1f801070): Returning 0x0000
-SYSCALL instruction executed (PC=0x8005aa14)
-!!! CPU Exception: Cause=0x08, PC=0x8005aa14, InDelaySlot=0 !!!
-~ Read32 from IRQ_MASK (0x1f801074): Returning 0x000d
-~ Read32 from IRQ_STATUS (0x1f801070): Returning 0x0000
-~ Read32 from IRQ_MASK (0x1f801074): Returning 0x000d
-~ Read32 from IRQ_STATUS (0x1f801070): Returning 0x0000
-SYSCALL instruction executed (PC=0x8005aa14)
-!!! CPU Exception: Cause=0x08, PC=0x8005aa14, InDelaySlot=0 !!!
-~ Read32 from IRQ_MASK (0x1f801074): Returning 0x000d
-~ Read32 from IRQ_STATUS (0x1f801070): Returning 0x0000
-~ Read32 from IRQ_MASK (0x1f801074): Returning 0x000d
-~ Read32 from IRQ_STATUS (0x1f801070): Returning 0x0000
-SYSCALL instruction executed (PC=0x8005aa14)
-!!! CPU Exception: Cause=0x08, PC=0x8005aa14, InDelaySlot=0 !!!
-~ Read32 from IRQ_MASK (0x1f801074): Returning 0x000d
-~ Read32 from IRQ_STATUS (0x1f801070): Returning 0x0000
-~ Read32 from IRQ_MASK (0x1f801074): Returning 0x000d
-~ Read32 from IRQ_STATUS (0x1f801070): Returning 0x0000
-SYSCALL instruction executed (PC=0x8005aa14)
-!!! CPU Exception: Cause=0x08, PC=0x8005aa14, InDelaySlot=0 !!!
-~ Read32 from IRQ_MASK (0x1f801074): Returning 0x000d
-~ Read32 from IRQ_STATUS (0x1f801070): Returning 0x0000
-~ Read32 from IRQ_MASK (0x1f801074): Returning 0x000d
-~ Read32 from IRQ_STATUS (0x1f801070): Returning 0x0000
-SYSCALL instruction executed (PC=0x8005aa14)
-!!! CPU Exception: Cause=0x08, PC=0x8005aa14, InDelaySlot=0 !!!
-~ Read32 from IRQ_MASK (0x1f801074): Returning 0x000d
-~ Read32 from IRQ_STATUS (0x1f801070): Returning 0x0000
-~ Read32 from IRQ_MASK (0x1f801074): Returning 0x000d
-~ Read32 from IRQ_STATUS (0x1f801070): Returning 0x0000
-SYSCALL instruction executed (PC=0x8005aa14)
-!!! CPU Exception: Cause=0x08, PC=0x8005aa14, InDelaySlot=0 !!!
-~ Read32 from IRQ_MASK (0x1f801074): Returning 0x000d
-~ Read32 from IRQ_STATUS (0x1f801070): Returning 0x0000
-~ Read32 from IRQ_MASK (0x1f801074): Returning 0x000d
-~ Read32 from IRQ_STATUS (0x1f801070): Returning 0x0000
-SYSCALL instruction executed (PC=0x8005aa14)
-!!! CPU Exception: Cause=0x08, PC=0x8005aa14, InDelaySlot=0 !!!
-~ Read32 from IRQ_MASK (0x1f801074): Returning 0x000d
-~ Read32 from IRQ_STATUS (0x1f801070): Returning 0x0000
-~ Read32 from IRQ_MASK (0x1f801074): Returning 0x000d
-~ Read32 from IRQ_STATUS (0x1f801070): Returning 0x0000
-SYSCALL instruction executed (PC=0x8005aa14)
-!!! CPU Exception: Cause=0x08, PC=0x8005aa14, InDelaySlot=0 !!!
-~ Read32 from IRQ_MASK (0x1f801074): Returning 0x000d
-~ Read32 from IRQ_STATUS (0x1f801070): Returning 0x0000
-~ Read32 from IRQ_MASK (0x1f801074): Returning 0x000d
-~ Read32 from IRQ_STATUS (0x1f801070): Returning 0x0000
-SYSCALL instruction executed (PC=0x8005aa14)
-!!! CPU Exception: Cause=0x08, PC=0x8005aa14, InDelaySlot=0 !!!
-~ Read32 from IRQ_MASK (0x1f801074): Returning 0x000d
-~ Read32 from IRQ_STATUS (0x1f801070): Returning 0x0000
-~ Read32 from IRQ_MASK (0x1f801074): Returning 0x000d
-~ Read32 from IRQ_STATUS (0x1f801070): Returning 0x0000
 SYSCALL instruction executed (PC=0x8005aa14)
 !!! CPU Exception: Cause=0x08, PC=0x8005aa14, InDelaySlot=0 !!!
 ~ Read32 from IRQ_MASK (0x1f801074): Returning 0x000d

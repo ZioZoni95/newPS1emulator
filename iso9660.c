@@ -26,6 +26,7 @@ static bool read_sector(Cdrom* cdrom, uint32_t lba, uint8_t* buffer) {
         perror("ISO9660 Error: fseek failed");
         return false;
     }
+    memset(buffer, 0, ISO_SECTOR_SIZE);
 
     size_t bytes_read = fread(buffer, 1, ISO_SECTOR_SIZE, cdrom->disc_file);
 
@@ -50,29 +51,22 @@ bool iso_read_pvd(Cdrom* cdrom, IsoPrimaryVolumeDescriptor* pvd) {
 
     printf("ISO9660: Reading Primary Volume Descriptor at sector %d...\n", PVD_SECTOR);
 
-    // Read the PVD sector from the disc
     if (!read_sector(cdrom, PVD_SECTOR, sector_buffer)) {
         fprintf(stderr, "ISO9660 Error: Failed to read PVD sector.\n");
         return false;
     }
+    printf("ISO9660: Successfully read sector %d.\n", PVD_SECTOR);
 
-    // The PVD structure is at the beginning of the sector data
     IsoPrimaryVolumeDescriptor* temp_pvd = (IsoPrimaryVolumeDescriptor*)sector_buffer;
 
-    // --- Validate the PVD ---
-    // 1. Check the type code. It must be 1 for a PVD.
     if (temp_pvd->type_code != 1) {
         fprintf(stderr, "ISO9660 Error: PVD type code is not 1 (was 0x%02x).\n", temp_pvd->type_code);
         return false;
     }
-
-    // 2. Check the standard identifier. It must be "CD001".
     if (strncmp(temp_pvd->standard_identifier, "CD001", 5) != 0) {
         fprintf(stderr, "ISO9660 Error: PVD standard identifier is not 'CD001'.\n");
         return false;
     }
-
-    // 3. Check the logical block size. Should be 2048 bytes.
     if (temp_pvd->logical_block_size_le != ISO_SECTOR_SIZE) {
         fprintf(stderr, "ISO9660 Error: Logical block size is %d, expected %d.\n",
                 temp_pvd->logical_block_size_le, ISO_SECTOR_SIZE);
@@ -80,8 +74,6 @@ bool iso_read_pvd(Cdrom* cdrom, IsoPrimaryVolumeDescriptor* pvd) {
     }
 
     printf("ISO9660: Valid PVD found. Volume ID: %.*s\n", 32, temp_pvd->volume_identifier);
-
-    // Copy the valid PVD data to the output parameter
     memcpy(pvd, temp_pvd, sizeof(IsoPrimaryVolumeDescriptor));
 
     return true;

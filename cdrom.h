@@ -116,6 +116,7 @@ typedef struct Cdrom {
     IsoPrimaryVolumeDescriptor pvd;
     /** @brief Flag indicating if the PVD was successfully read and is valid */
     bool pvd_valid;
+    char executable_path[64]; //per SYSTEM.CNF
 
     // TODO: Add sector buffer, disc size LBA, track information
 
@@ -163,5 +164,7 @@ bool cdrom_load_disc(Cdrom* cdrom, const char* bin_filename);
 
 // TODO: Add function prototype for stepping CDROM state machine/timing if needed
  void cdrom_step(Cdrom* cdrom, uint32_t cycles);
+
+bool cdrom_read_file(Cdrom* cdrom, IsoDirectoryRecord* file_record, uint8_t* buffer);
 
 #endif // CDROM_H

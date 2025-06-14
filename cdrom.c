@@ -571,12 +571,12 @@ void cdrom_init(Cdrom* cdrom, struct Interconnect* inter) {
     printf("Initializing CD-ROM...\n");
     memset(cdrom, 0, sizeof(Cdrom));
     cdrom->inter = inter;
-    cdrom->status = STAT_PRMEMPT | STAT_PRMWRDY;
+    cdrom->status = 0x18;
     cdrom->disc_present = false;
     cdrom->disc_file = NULL;
     cdrom->current_state = CD_STATE_IDLE;
     cdrom->double_speed = false;
-    cdrom->sector_size_is_2340 = false;
+    //cdrom->sector_size_is_2340 = false;
     fifo_init(&cdrom->param_fifo);
     fifo_init(&cdrom->response_fifo);
     memset(cdrom->data_buffer, 0, sizeof(cdrom->data_buffer)); // Use sizeof
@@ -591,14 +591,18 @@ void cdrom_init(Cdrom* cdrom, struct Interconnect* inter) {
  * @param bin_filename Path to the .bin or .iso file.
  * @return True if successful, false otherwise.
  */
+
+/**
+ * @brief UPDATED - Attempts to load a disc image and parse SYSTEM.CNF.
+ */
 bool cdrom_load_disc(Cdrom* cdrom, const char* bin_filename) {
     if (cdrom->disc_file) {
         fclose(cdrom->disc_file);
         cdrom->disc_file = NULL;
     }
     cdrom->disc_present = false;
-    cdrom->pvd_valid = false; // <<< ADD THIS LINE
-    cdrom->is_cd_da = false;
+    cdrom->pvd_valid = false;
+    memset(cdrom->executable_path, 0, sizeof(cdrom->executable_path));
 
     printf("CDROM: Attempting to load disc image '%s'\n", bin_filename);
     cdrom->disc_file = fopen(bin_filename, "rb");
@@ -610,36 +614,48 @@ bool cdrom_load_disc(Cdrom* cdrom, const char* bin_filename) {
 
     printf("CDROM: Disc image loaded successfully.\n");
     cdrom->disc_present = true;
-    cdrom->current_state = CD_STATE_IDLE;
 
-// Attempt to read the PVD
     if (iso_read_pvd(cdrom, &cdrom->pvd)) {
         cdrom->pvd_valid = true;
-        printf("CDROM: Successfully parsed ISO9660 Primary Volume Descriptor.\n");
+        // This log is now inside iso_read_pvd
 
-        // --- NEW: Find SYSTEM.CNF ---
-        // The root directory record is conveniently located inside the PVD itself.
         IsoDirectoryRecord* root_record = (IsoDirectoryRecord*)cdrom->pvd.root_directory_record;
-
-        // We need a buffer to hold the record we find, because its size is variable.
         uint8_t found_record_buffer[256];
         IsoDirectoryRecord* system_cnf_record = (IsoDirectoryRecord*)found_record_buffer;
 
-        // Search for the file. Note the ";1" is the file version for ISO9660.
         if (iso_find_file(cdrom, root_record, "SYSTEM.CNF;1", system_cnf_record)) {
-             printf("CDROM: Found SYSTEM.CNF at LBA %u, size %u bytes.\n",
-                    system_cnf_record->extent_location_le,
-                    system_cnf_record->data_length_le);
-        }
-        // --- End of new section ---
+            printf("CDROM: Successfully found 'SYSTEM.CNF;1'!\n");
+            printf("  -> File LBA: %u\n", system_cnf_record->extent_location_le);
+            printf("  -> File Size: %u bytes\n", system_cnf_record->data_length_le);
 
+            uint32_t file_size = system_cnf_record->data_length_le;
+            uint8_t* file_buffer = malloc(file_size + 1);
+
+            if (cdrom_read_file(cdrom, system_cnf_record, file_buffer)) {
+                // --- FIX #1 IS HERE ---
+                file_buffer[file_size] = '\0'; // Use single backslash
+                printf("CDROM: Read SYSTEM.CNF content:\n---\n%s\n---\n", (char*)file_buffer);
+
+                char boot_path[256];
+                if (sscanf((char*)file_buffer, "BOOT = cdrom:\\%s", boot_path) == 1) {
+                    char* semicolon = strchr(boot_path, ';');
+                    // --- FIX #2 IS HERE ---
+                    if (semicolon) { *semicolon = '\0'; } // Use single backslash
+                    strcpy(cdrom->executable_path, boot_path);
+                    printf("CDROM: Found executable path: '%s'\n", cdrom->executable_path);
+                }
+            }
+            free(file_buffer);
+        } else {
+            fprintf(stderr, "CDROM Error: Could not find 'SYSTEM.CNF;1' in the root directory.\n");
+        }
     } else {
-        cdrom->pvd_valid = false;
-        fprintf(stderr, "CDROM Warning: Could not find a valid ISO9660 PVD. This may not be a game disc.\n");
+        fprintf(stderr, "CDROM Warning: Could not find a valid ISO9660 PVD.\n");
     }
 
     return true;
 }
+
 
 uint8_t cdrom_read_register(Cdrom* cdrom, uint32_t addr) {
     uint8_t offset = addr & 0x3;
@@ -720,6 +736,40 @@ void cdrom_write_register(Cdrom* cdrom, uint32_t addr, uint8_t value) {
              } else fprintf(stderr, "CDROM Write Error: Write to 1803h with Index %d != 0 or 1\n", reg_index);
             break;
     }
+}
+
+/**
+ * @brief Reads an entire file from the disc into a buffer, sector by sector.
+ * NOTE: This is a simplified helper for the emulator's internal use.
+ */
+bool cdrom_read_file(Cdrom* cdrom, IsoDirectoryRecord* file_record, uint8_t* buffer) {
+    uint32_t file_lba = file_record->extent_location_le;
+    uint32_t file_size = file_record->data_length_le;
+    uint32_t bytes_left = file_size;
+
+    printf("CDROM: Internal read for file at LBA %u (%u bytes)\n", file_lba, file_size);
+
+    while (bytes_left > 0) {
+        uint8_t sector_buffer[CD_RAW_SECTOR_SIZE];
+        long long offset = (long long)file_lba * CD_RAW_SECTOR_SIZE;
+
+        if (fseek(cdrom->disc_file, (long)offset, SEEK_SET) != 0) {
+            perror("cdrom_read_file fseek failed");
+            return false;
+        }
+        if (fread(sector_buffer, 1, CD_RAW_SECTOR_SIZE, cdrom->disc_file) != CD_RAW_SECTOR_SIZE) {
+            fprintf(stderr, "cdrom_read_file fread failed\n");
+            return false;
+        }
+
+        uint32_t bytes_to_copy = (bytes_left > CD_USER_DATA_SIZE) ? CD_USER_DATA_SIZE : bytes_left;
+        memcpy(buffer, sector_buffer + CD_MODE2_FORM1_HEADER_SIZE, bytes_to_copy);
+
+        buffer += bytes_to_copy;
+        bytes_left -= bytes_to_copy;
+        file_lba++;
+    }
+    return true;
 }
 
 /**
