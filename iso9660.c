@@ -87,50 +87,60 @@ bool iso_read_pvd(Cdrom* cdrom, IsoPrimaryVolumeDescriptor* pvd) {
     return true;
 }
 
-bool iso_find_file(Cdrom* cdrom, IsoDirectoryRecord* directory_record, const char* filename, IsoDirectoryRecord* found_record) {
-    // A directory's data is just a list of directory records.
-    // The "extent" tells us the LBA where this data starts.
+bool iso_find_file(struct Cdrom* cdrom, IsoDirectoryRecord* directory_record, const char* filename, IsoDirectoryRecord* found_record) {
     uint32_t dir_lba = directory_record->extent_location_le;
     uint32_t dir_size = directory_record->data_length_le;
 
     printf("ISO9660: Searching for '%s' in directory at LBA %u (size %u bytes)\n", filename, dir_lba, dir_size);
 
+    if (dir_size == 0) {
+        fprintf(stderr, "ISO9660 Error: Directory size is 0.\n");
+        return false;
+    }
+
     uint8_t sector_buffer[ISO_SECTOR_SIZE];
     uint32_t bytes_searched = 0;
 
+    // This outer loop handles directories that span multiple sectors
     while (bytes_searched < dir_size) {
         if (!read_sector(cdrom, dir_lba, sector_buffer)) {
             fprintf(stderr, "ISO9660 Error: Failed to read directory sector at LBA %u.\n", dir_lba);
             return false;
         }
 
-        // Loop through the directory records in this sector
+        // --- CORRECTED LOGIC IS HERE ---
+        // This inner loop iterates over all records within the single sector we just read.
         IsoDirectoryRecord* record = (IsoDirectoryRecord*)sector_buffer;
         while ((uint8_t*)record < sector_buffer + ISO_SECTOR_SIZE) {
-            // The length of the record can be 0, which indicates the end of the records in this sector.
+            // A record length of 0 means we've hit padding at the end of the sector.
             if (record->length == 0) {
                 break;
             }
 
-            // Compare the filename. ISO filenames are padded with nulls.
-            // e.g., "SYSTEM.CNF;1" followed by nulls.
+            // Print every filename we find for debugging
+            printf("  -> Found entry: '%.*s'\n",
+                   record->file_identifier_length,
+                   record->file_identifier);
+
+            // Check if the filename matches
             if (record->file_identifier_length == strlen(filename) &&
                 strncmp(record->file_identifier, filename, strlen(filename)) == 0)
             {
-                printf("ISO9660: Found file '%s'!\n", filename);
-                // Copy the found record's data into the provided struct pointer.
-                // We must use malloc because the record itself is variable size.
+                printf("ISO9660: Matched file '%s'!\n", filename);
                 memcpy(found_record, record, record->length);
                 return true; // We found it!
             }
 
-            // Move to the next record in the sector
-            bytes_searched += record->length;
+            // Move to the start of the next record
             record = (IsoDirectoryRecord*)((uint8_t*)record + record->length);
         }
-        dir_lba++; // Move to the next sector of the directory
+        // --- END OF CORRECTION ---
+
+        // We have finished processing this sector, move to the next one
+        dir_lba++;
+        bytes_searched += ISO_SECTOR_SIZE;
     }
 
     fprintf(stderr, "ISO9660 Warning: File '%s' not found in directory.\n", filename);
-    return false; // File not found
+    return false;
 }

@@ -60,7 +60,7 @@ typedef enum {
 
 // --- CDROM State Structure ---
 // Holds the complete state of the emulated CD-ROM drive and controller.
-typedef struct {
+typedef struct Cdrom {
     // --- Controller Registers/State ---
     /** @brief Currently selected register index (0-3), written via 1800h.0 */
     uint8_t index;

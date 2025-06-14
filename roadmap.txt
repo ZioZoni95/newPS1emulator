@@ -13,9 +13,13 @@ Phase 1: Foundation (COMPLETE)
 
 Phase 2: Core System & Peripheral Emulation (In Progress)
 
-⏳ Timers & Accurate Interrupts: Started. Basic step logic implemented. Further accuracy improvements pending.
-⏳ CD-ROM Drive Emulation: State-driven command handling started. BIOS now attempts to boot from the loaded disc image, which is a major milestone.
-   - NEXT: Needs implementation of a basic CD filesystem (ISO9660) to read `SYSTEM.CNF`.
+⏳ Timers & Accurate Interrupts: Started.
+   Basic step logic implemented. Further accuracy improvements pending.
+⏳ CD-ROM Drive Emulation: State-driven command handling started.
+   BIOS now attempts to boot from the loaded disc image, which is a major milestone.
+   (WORKING ON) Basic CD filesystem (ISO9660) implemented to find `SYSTEM.CNF`. (not working right now)
+   - NEXT: Parse the contents of `SYSTEM.CNF` to find the game's main executable file.
+   - NEXT: Read the main executable from the disc into RAM.
    - NEXT: Needs DMA integration for sector data transfers.
    - NEEDS: Implementation of all remaining CD-ROM commands.
 ❌ Controller & Memory Card Emulation: Not Started.
@@ -24,7 +28,9 @@ Phase 2: Core System & Peripheral Emulation (In Progress)
 
 Phase 3: Advanced GPU & System Refinement (Not Started)
 
-❌ GPU - VRAM Read (`GP0(0xC0)`): Not implemented. The BIOS currently stalls when it tries to read data from VRAM. This is a known issue to fix before games will boot.
+❌ GPU - VRAM Read (`GP0(0xC0)`): Not implemented.
+   The BIOS currently stalls when it tries to read data from VRAM.
+   This is a known issue to fix before games will boot.
 ❌ GPU - Texturing & Advanced VRAM: Not Started.
 ❌ GPU - GTE (Geometry Transformation Engine): Not Started.
 ❌ GPU - Timings & Video Output: Not Started.
