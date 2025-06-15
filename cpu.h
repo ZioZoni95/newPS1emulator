@@ -5,6 +5,10 @@
 #include <stdint.h>  // For uint32_t, int32_t etc.
 #include "interconnect.h" // Needs definition of Interconnect for the pointer member
 
+// Forward declaration for Cpu struct
+// This is needed because handle_bios_syscall uses a Cpu* pointer before Cpu is fully defined.
+typedef struct Cpu Cpu;
+
 // Define Register Index type for clarity (can just be uint32_t if preferred)
 // Using a distinct type can help prevent mixing indices and values, though not strictly enforced here.
 typedef uint32_t RegisterIndex;
@@ -35,7 +39,7 @@ typedef enum {
 
 /**
  * @brief Constants defining the instruction cache geometry.
- * Based on Guide Section 8.1 [cite: 2987]
+ * Based on Guide Section 8.1
  */
 #define ICACHE_NUM_LINES 256       // 256 lines in the cache
 #define ICACHE_LINE_WORDS 4        // 4 words (instructions) per cache line
@@ -49,12 +53,12 @@ typedef enum {
 typedef struct {
     /**
      * @brief The upper 20 bits of the physical address stored in this cache line.
-     * Used to verify if the cached data matches the requested address. [cite: 2990, 2999]
+     * Used to verify if the cached data matches the requested address.
      */
     uint32_t tag;
     /**
      * @brief Validity flag for each of the 4 words in the cache line.
-     * True if the corresponding data word holds valid instruction data. [cite: 2991]
+     * True if the corresponding data word holds valid instruction data.
      */
     bool     valid[ICACHE_LINE_WORDS];
     /**
@@ -155,6 +159,9 @@ void decode_and_execute(Cpu* cpu, uint32_t instruction);
  * @param cause The reason for the exception (from ExceptionCause enum).
  */
 void cpu_exception(Cpu* cpu, ExceptionCause cause);
+
+// --- BIOS SYSCALL handler prototype (needs Cpu to be declared) ---
+static void handle_bios_syscall(Cpu* cpu, uint32_t syscall_num);
 
 // --- Register Access ---
 /**

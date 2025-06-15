@@ -12,24 +12,24 @@
 void cpu_init(Cpu* cpu, Interconnect* inter) {
     printf("Initializing CPU...\n");
 
-    cpu->pc = 0xbfc00000;         // Reset vector: Start of BIOS [cite: 79]
+    cpu->pc = 0xbfc00000;         // Reset vector: Start of BIOS
     cpu->next_pc = cpu->pc + 4;   // Initial next PC
     cpu->current_pc = cpu->pc;    // Initial current PC (doesn't matter much before first cycle)
-    cpu->inter = inter;           // Store pointer to interconnect [cite: 165]
+    cpu->inter = inter;           // Store pointer to interconnect
 
     // Initialize GPRs
     for (int i = 0; i < 32; ++i) {
-        cpu->regs[i] = 0xdeadbeef;     // Input set garbage value [cite: 219]
+        cpu->regs[i] = 0xdeadbeef;     // Input set garbage value
         cpu->out_regs[i] = 0xdeadbeef; // Output set garbage value
     }
-    cpu->regs[REG_ZERO] = 0;      // R0 is always 0 [cite: 221]
+    cpu->regs[REG_ZERO] = 0;      // R0 is always 0
     cpu->out_regs[REG_ZERO] = 0;  // Ensure R0 is 0 in output set too
 
     // Initialize Load Delay Slot state
     cpu->load_reg_idx = REG_ZERO; // Target R0 initially (no-op)
     cpu->load_value = 0;
 
-    // Initialize HI/LO registers [cite: 730]
+    // Initialize HI/LO registers
     cpu->hi = 0xdeadbeef;
     cpu->lo = 0xdeadbeef;
 
@@ -38,9 +38,9 @@ void cpu_init(Cpu* cpu, Interconnect* inter) {
     cpu->in_delay_slot = false;   // Not initially in a delay slot
 
     // Initialize Coprocessor 0 Registers
-    cpu->sr = 0;            // Status Register (initial state varies, BIOS sets it) [cite: 386]
-    cpu->cause = 0;         // Cause Register (cleared) [cite: 850]
-    cpu->epc = 0;           // Exception PC (cleared) [cite: 850]
+    cpu->sr = 0;            // Status Register (initial state varies, BIOS sets it)
+    cpu->cause = 0;         // Cause Register (cleared)
+    cpu->epc = 0;           // Exception PC (cleared)
 
     printf("  Initializing I-Cache...\n");
     for (int i = 0; i < ICACHE_NUM_LINES; ++i) {
@@ -98,6 +98,45 @@ void cpu_branch(Cpu* cpu, uint32_t offset_se) {
     // The instruction handler (e.g., op_beq) MUST set cpu->branch_taken = true after calling this.
 }
 
+// --- BIOS SYSCALL Handling ---
+static void handle_bios_syscall(Cpu* cpu, uint32_t syscall_num_from_a0) { // Renamed parameter for clarity
+    // According to Nocash PSX spec, SYS-Functions use R4 ($a0) for function number.
+    // Return value (if any) is typically in R2 ($v0).
+
+    printf("BIOS SYSCALL: 0x%02x called at PC=0x%08x (from $a0)\n", syscall_num_from_a0, cpu->epc); // Log from $a0
+
+    switch (syscall_num_from_a0) { // Use syscall_num_from_a0 for dispatch
+        case 0x00: // NoFunction()
+            // printf("  -> NoFunction (0x00)\n"); // Optional detailed log
+            // Simply return.
+            break;
+        case 0x01: // EnterCriticalSection()
+            // printf("  -> EnterCriticalSection (0x01)\n"); // Optional detailed log
+            // This would typically involve setting SR bits to disable interrupts.
+            // For now, just acknowledge.
+            break;
+        case 0x02: // ExitCriticalSection()
+            // printf("  -> ExitCriticalSection (0x02)\n"); // Optional detailed log
+            // This would typically involve restoring SR bits to enable interrupts.
+            // For now, just acknowledge.
+            break;
+        case 0x03: // ChangeThreadSubFunction(addr)
+            // This is more complex, involving threading. For now, acknowledge.
+            // printf("  -> ChangeThreadSubFunction (0x03) called with addr=0x%08x\n", cpu_reg(cpu, 5)); // $a1 for addr
+            break;
+
+        // SYS(04h..FFFFFFFFh) calls DeliverEvent(F0000010h,4000h)
+        // This is a broad range, so we can handle it in default or a specific range check.
+        // For now, let's let default handle it, or you can add a case for a specific range if needed.
+        // If the BIOS keeps looping on 0x04 or higher, we might need to simulate DeliverEvent.
+
+        default:
+            fprintf(stderr, "Unhandled BIOS SYSCALL 0x%02x (from $a0) at PC=0x%08x. Returning 0 to $v0.\n",
+                    syscall_num_from_a0, cpu->epc);
+            cpu_set_reg(cpu, 2, 0); // Set $v0 (register 2) to 0 (common for success/dummy return)
+            break;
+    }
+}
 
 // --- Exception Handling ---
 /**
@@ -108,8 +147,8 @@ void cpu_exception(Cpu* cpu, ExceptionCause cause) {
     printf("!!! CPU Exception: Cause=0x%02x, PC=0x%08x, InDelaySlot=%d !!!\n",
            cause, cpu->current_pc, cpu->in_delay_slot);
 
-    // Determine exception handler address based on SR bit 22 (BEV) [cite: 816]
-    uint32_t handler_addr = (cpu->sr & (1 << 22)) ? 0xbfc00180 : 0x80000080;
+    // Determine exception handler address based on SR bit 22 (BEV)
+    uint32_t handler_addr = (cpu->sr & (1 << 22)) ? 0xbfc00180  : 0x80000080;
 
     // Update Status Register (SR): Push mode bits onto the stack
     // This disables interrupts (sets IEC=0) and forces kernel mode (KUc=0) in the new state.
@@ -117,12 +156,12 @@ void cpu_exception(Cpu* cpu, ExceptionCause cause) {
     cpu->sr &= ~0x3f;                       // Clear bits 5:0
     cpu->sr |= (mode_stack << 2) & 0x3f;    // Shift stack left, pushing 0s into KUc/IEc
 
-    // Update Cause Register: Set ExcCode (bits 6:2) [cite: 816]
+    // Update Cause Register: Set ExcCode (bits 6:2)
     // Preserve Interrupt Pending bits (15:8), clear the rest for now
     uint32_t ip_bits = cpu->cause & 0xFF00; // Preserve IP bits
     cpu->cause = ip_bits | ((uint32_t)cause << 2); // Set ExcCode
 
-    // Update EPC and Cause BD bit based on delay slot [cite: 929, 931]
+    // Update EPC and Cause BD bit based on delay slot
     if (cpu->in_delay_slot) {
         cpu->epc = cpu->current_pc - 4; // EPC points to the branch instruction
         cpu->cause |= (1 << 31);        // Set the Branch Delay (BD) bit
@@ -131,7 +170,26 @@ void cpu_exception(Cpu* cpu, ExceptionCause cause) {
         cpu->cause &= ~(1 << 31);       // Ensure BD bit is clear
     }
 
-    // Jump to the exception handler (immediately, no delay slot for exceptions)
+    // --- IMPORTANT MODIFICATION: SYSCALL Specific Dispatch ---
+    if (cause == EXCEPTION_SYSCALL) {
+        // For SYSCALLs, the BIOS expects a specific return behavior.
+        // It reads the syscall number from $v0, jumps to its handler,
+        // and then returns to EPC + 4 (instruction after SYSCALL).
+        // By handling the syscall here directly, we are mimicking the BIOS's dispatcher.
+        uint32_t syscall_num = cpu_reg(cpu, 2); // Get SYSCALL number from $v0
+        handle_bios_syscall(cpu, syscall_num); // Process the syscall
+
+        // After processing, immediately set PC to return from syscall.
+        // The `rfe` instruction in the real BIOS's exception handler would normally do this.
+        // By setting it here, we bypass the need to emulate that `rfe` logic for SYSCALLs
+        // in the immediate term, letting the BIOS progress.
+        cpu->pc = cpu->epc + 4; // Return to the instruction *after* the SYSCALL
+        cpu->next_pc = cpu->pc + 4; // Set next_pc sequentially
+        return; // Exit exception handling, as syscall is "handled" directly
+    }
+    // --- END SYSCALL MODIFICATION ---
+
+    // For all other exceptions, jump to the generic exception handler vector.
     cpu->pc = handler_addr;
     cpu->next_pc = cpu->pc + 4;
 }
@@ -202,7 +260,7 @@ void cpu_run_next_instruction(Cpu* cpu) {
 
 /**
  * @brief Fetches an instruction word from memory, checking the instruction cache first.
- * Handles cache hits and misses, fetching from the interconnect if needed.
+ * Handles cache lookup, hit/miss logic, and fetching from interconnect on miss.
  * Based on Guide Section 8.1 and 8.2 principles.
  * @param cpu Pointer to the Cpu state (containing the cache).
  * @param vaddr The virtual address of the instruction to fetch.
@@ -229,7 +287,7 @@ static uint32_t cpu_icache_fetch(Cpu* cpu, uint32_t vaddr) {
     // Tag:          Bits [31:12] of paddr
     // Line Index:   Bits [11:4] of paddr (determines which of the 256 lines)
     // Word Index:   Bits [3:2]  of paddr (determines which word within the line)
-    // [cite: 2994]
+    //
     uint32_t tag        = paddr >> 12;
     uint32_t line_index = (paddr >> 4) & (ICACHE_NUM_LINES - 1); // Mask for 256 lines (0xFF)
     uint32_t word_index = (paddr >> 2) & (ICACHE_LINE_WORDS - 1); // Mask for 4 words (0x3)
@@ -404,7 +462,7 @@ static void op_ori(Cpu* cpu, uint32_t instruction) {
 }
 
 static void op_sw(Cpu* cpu, uint32_t instruction) {
-    if ((cpu->sr & 0x10000) != 0) { // Check cache isolation bit [cite: 383, 390]
+    if ((cpu->sr & 0x10000) != 0) { // Check cache isolation bit
         // Debug print kept as it indicates unusual state
         printf("~ SW Ignored (Cache Isolated, SR=0x%08x)\n", cpu->sr);
         return;
@@ -419,7 +477,7 @@ static void op_sw(Cpu* cpu, uint32_t instruction) {
 
 static void op_sll(Cpu* cpu, uint32_t instruction) {
     // NOP is SLL R0, R0, 0. Check for it to avoid calculation.
-    if (instruction == 0) return; // Common NOP [cite: 290]
+    if (instruction == 0) return; // Common NOP
     uint32_t shamt = instr_shift(instruction);
     uint32_t rt = instr_t(instruction);
     uint32_t rd = instr_d(instruction);
@@ -435,7 +493,7 @@ static void op_addiu(Cpu* cpu, uint32_t instruction) {
 
 static void op_j(Cpu* cpu, uint32_t instruction) {
     uint32_t target_imm = instr_imm_jump(instruction);
-    // Combine upper 4 bits of current PC+4 with target [cite: 318]
+    // Combine upper 4 bits of current PC+4 with target
     cpu->next_pc = (cpu->current_pc & 0xF0000000) | (target_imm << 2);
     cpu->branch_taken = true;
 }
@@ -461,7 +519,7 @@ static void op_cop0(Cpu* cpu, uint32_t instruction) {
             break;
         default:
              // Other COP0 ops (TLBR, TLBWI, TLBP etc.) are for MMU, trigger exception
-             printf("Warning: Unhandled COP0 instruction: 0x%08x (CopOp=%u)\n", instruction, cop_opcode);
+             fprintf(stderr, "Warning: Unhandled COP0 instruction: 0x%08x (CopOp=%u) at PC=0x%08x\n", instruction, cop_opcode, cpu->current_pc);
              cpu_exception(cpu, EXCEPTION_ILLEGAL_INSTRUCTION); // Or maybe COPROCESSOR_ERROR? Illegal seems better.
             break;
     }
@@ -474,38 +532,33 @@ static void op_mtc0(Cpu* cpu, uint32_t instruction) {
 
     switch (cop_r) {
         case 3: case 5: case 6: case 7: case 9: case 11: // Breakpoint/DCIC regs
-             if (value != 0) fprintf(stderr, "Warning: MTC0 to unhandled Breakpoint/DCIC Reg %u = 0x%08x\n", cop_r, value);
+             if (value != 0) fprintf(stderr, "Warning: MTC0 to unhandled Breakpoint/DCIC Reg %u = 0x%08x at PC=0x%08x\n", cop_r, value, cpu->current_pc);
              // No state change for now
              break;
-        case 12: // SR (Status Register) [cite: 382]
+        case 12: // SR (Status Register)
             // printf("~ MTC0 SR = 0x%08x\n", value); // Debug
             cpu->sr = value;
             break;
-        case 13: // CAUSE [cite: 474, 481]
+        case 13: // CAUSE
              // Only bits 8 and 9 (IP0, IP1) seem writable to force software interrupts.
              // Mask other bits.
              cpu->cause = (cpu->cause & ~0x300) | (value & 0x300);
              if ((value & ~0x300) != 0) {
-                 fprintf(stderr, "Warning: MTC0 to CAUSE attempting to write non-SW bits: 0x%08x\n", value);
+                 fprintf(stderr, "Warning: MTC0 to CAUSE attempting to write non-SW bits: 0x%08x at PC=0x%08x\n", value, cpu->current_pc);
              }
              break;
         // EPC (Reg 14) is read-only. Other registers are typically MMU-related or unused.
         default:
-            fprintf(stderr, "Warning: MTC0 to unhandled/read-only COP0 Register %u = 0x%08x\n", cop_r, value);
+            fprintf(stderr, "Warning: MTC0 to unhandled/read-only COP0 Register %u = 0x%08x at PC=0x%08x\n", cop_r, value, cpu->current_pc);
             break;
     }
 }
 
 static void op_rfe(Cpu* cpu, uint32_t instruction) {
-    // RFE restores the previous KU/IE bits from the stack in SR [cite: 906]
+    // RFE restores the previous KU/IE bits from the stack in SR
     uint32_t mode_stack = cpu->sr & 0x3f;
     cpu->sr &= ~0x3f;
-    cpu->sr |= (mode_stack >> 2) & 0xf; // Shift stack right, only restore lower 2 pairs (KU/IE previous and old)
-    // Note: The guide's code `(mode_stack >> 2) & 0x3f` is likely slightly wrong,
-    // as only the lower 4 bits make sense to restore (previous/old state).
-    // Keeping only lower 4 bits restored: `& 0xf`. Let's follow guide for now: `& 0x3f`.
-    // cpu->sr |= (mode_stack >> 2) & 0xf; // Alternative interpretation
-    cpu->sr |= (mode_stack >> 2) & 0x3f; // Following guide's code [cite: 928]
+    cpu->sr |= (mode_stack >> 2) & 0x3f; // Following guide's code
 }
 
 static void op_bne(Cpu* cpu, uint32_t instruction) {
@@ -524,18 +577,18 @@ static void op_addi(Cpu* cpu, uint32_t instruction) {
     uint32_t rs = instr_s(instruction);
     int32_t rs_value = (int32_t)cpu_reg(cpu, rs);
     int32_t result;
-    // Use GCC/Clang builtin for checked signed addition [cite: 406]
+    // Use GCC/Clang builtin for checked signed addition
     if (__builtin_add_overflow(rs_value, imm_se, &result)) {
         // Debug print kept as it indicates an exception condition
         fprintf(stderr, "ADDI Signed Overflow: %d + %d (PC=0x%08x)\n", rs_value, imm_se, cpu->current_pc);
-        cpu_exception(cpu, EXCEPTION_OVERFLOW); // Trigger overflow exception [cite: 968]
+        cpu_exception(cpu, EXCEPTION_OVERFLOW); // Trigger overflow exception
     } else {
         cpu_set_reg(cpu, rt, (uint32_t)result);
     }
 }
 
 static void op_lw(Cpu* cpu, uint32_t instruction) {
-    if ((cpu->sr & 0x10000) != 0) { // Check cache isolation [cite: 413]
+    if ((cpu->sr & 0x10000) != 0) { // Check cache isolation
         printf("~ LW Ignored (Cache Isolated, SR=0x%08x)\n", cpu->sr); // Keep debug print
         return;
     }
@@ -544,7 +597,7 @@ static void op_lw(Cpu* cpu, uint32_t instruction) {
     uint32_t rs = instr_s(instruction);
     uint32_t address = cpu_reg(cpu, rs) + offset;
 
-    // Perform load and schedule it for the delay slot [cite: 456]
+    // Perform load and schedule it for the delay slot
     uint32_t value_loaded = interconnect_load32(cpu->inter, address); // Alignment checked in interconnect
     cpu->load_reg_idx = rt;
     cpu->load_value = value_loaded;
@@ -578,7 +631,7 @@ static void op_sh(Cpu* cpu, uint32_t instruction) {
 }
 
 static void op_jal(Cpu* cpu, uint32_t instruction) {
-    cpu_set_reg(cpu, REG_RA, cpu->pc + 4); // Link Register $31 gets PC+8 (address after delay slot) [cite: 539]
+    cpu_set_reg(cpu, REG_RA, cpu->pc + 4); // Link Register $31 gets PC+8 (address after delay slot)
     uint32_t target_imm = instr_imm_jump(instruction);
     cpu->next_pc = (cpu->current_pc & 0xF0000000) | (target_imm << 2); // Same target calculation as J
     cpu->branch_taken = true;
@@ -622,7 +675,7 @@ static void op_lb(Cpu* cpu, uint32_t instruction) {
     uint32_t rs = instr_s(instruction);
     uint32_t address = cpu_reg(cpu, rs) + offset;
     uint8_t value_loaded = interconnect_load8(cpu->inter, address);
-    // Sign-extend the 8-bit value to 32 bits [cite: 559]
+    // Sign-extend the 8-bit value to 32 bits
     uint32_t value_sign_extended = (uint32_t)(int32_t)(int8_t)value_loaded;
     // Schedule load for delay slot
     cpu->load_reg_idx = rt;
@@ -645,9 +698,9 @@ static void op_mfc0(Cpu* cpu, uint32_t instruction) {
     uint32_t value_read = 0; // Default value if read fails or is unhandled
 
     switch (cop_r_src) {
-        case 12: value_read = cpu->sr; break; // SR [cite: 600]
-        case 13: value_read = cpu->cause; break; // CAUSE [cite: 859]
-        case 14: value_read = cpu->epc; break; // EPC [cite: 860]
+        case 12: value_read = cpu->sr; break; // SR
+        case 13: value_read = cpu->cause; break; // CAUSE
+        case 14: value_read = cpu->epc; break; // EPC
         // Add reads for other COP0 registers if needed (mostly MMU/debug related)
         default:
             // Keep warning for unhandled read
@@ -656,7 +709,7 @@ static void op_mfc0(Cpu* cpu, uint32_t instruction) {
             // Should it trigger an exception? Probably not, just return garbage/0.
             break;
     }
-    // Schedule load for delay slot [cite: 595]
+    // Schedule load for delay slot
     cpu->load_reg_idx = cpu_r_dest;
     cpu->load_value = value_read;
 }
@@ -675,11 +728,11 @@ static void op_add(Cpu* cpu, uint32_t instruction) {
     int32_t rs_value = (int32_t)cpu_reg(cpu, rs);
     int32_t rt_value = (int32_t)cpu_reg(cpu, rt);
     int32_t result;
-    // Use GCC/Clang builtin for checked signed addition [cite: 619]
+    // Use GCC/Clang builtin for checked signed addition
     if (__builtin_add_overflow(rs_value, rt_value, &result)) {
         // Keep exception print
         fprintf(stderr, "ADD Signed Overflow: %d + %d (PC=0x%08x)\n", rs_value, rt_value, cpu->current_pc);
-        cpu_exception(cpu, EXCEPTION_OVERFLOW); // Trigger overflow exception [cite: 959]
+        cpu_exception(cpu, EXCEPTION_OVERFLOW); // Trigger overflow exception
     } else {
         cpu_set_reg(cpu, rd, (uint32_t)result);
     }
@@ -688,7 +741,7 @@ static void op_add(Cpu* cpu, uint32_t instruction) {
 static void op_bgtz(Cpu* cpu, uint32_t instruction) {
     uint32_t imm_se = instr_imm_se(instruction);
     uint32_t rs = instr_s(instruction);
-    // Comparison is signed [cite: 639]
+    // Comparison is signed
     if ((int32_t)cpu_reg(cpu, rs) > 0) {
         cpu_branch(cpu, imm_se);
         cpu->branch_taken = true;
@@ -715,7 +768,7 @@ static void op_lbu(Cpu* cpu, uint32_t instruction) {
     uint32_t rs = instr_s(instruction);
     uint32_t address = cpu_reg(cpu, rs) + offset;
     uint8_t value_loaded = interconnect_load8(cpu->inter, address);
-    // Zero-extend the 8-bit value to 32 bits [cite: 652]
+    // Zero-extend the 8-bit value to 32 bits
     uint32_t value_zero_extended = (uint32_t)value_loaded;
     // Schedule load for delay slot
     cpu->load_reg_idx = rt;
@@ -728,7 +781,7 @@ static void op_jalr(Cpu* cpu, uint32_t instruction) {
     uint32_t target_address = cpu_reg(cpu, rs);
     uint32_t return_addr = cpu->pc + 4; // Address of instruction after delay slot
 
-    // Store return address in rd [cite: 666]
+    // Store return address in rd
     cpu_set_reg(cpu, rd, return_addr);
     // Set jump target
     cpu->next_pc = target_address;
@@ -755,7 +808,7 @@ static void op_bxx(Cpu* cpu, uint32_t instruction) {
     if (condition_met) {
         // Link if necessary (store PC+8 in $ra)
         if (is_link) {
-            cpu_set_reg(cpu, REG_RA, cpu->pc + 4); // [cite: 688]
+            cpu_set_reg(cpu, REG_RA, cpu->pc + 4); //
         }
         // Perform the branch
         cpu_branch(cpu, imm_se);
@@ -764,10 +817,10 @@ static void op_bxx(Cpu* cpu, uint32_t instruction) {
 }
 
 static void op_slti(Cpu* cpu, uint32_t instruction) {
-    int32_t imm_se = (int32_t)instr_imm_se(instruction); // Immediate is signed [cite: 692]
+    int32_t imm_se = (int32_t)instr_imm_se(instruction); // Immediate is signed
     uint32_t rt = instr_t(instruction);
     uint32_t rs = instr_s(instruction);
-    // Comparison is signed [cite: 692]
+    // Comparison is signed
     cpu_set_reg(cpu, rt, ((int32_t)cpu_reg(cpu, rs) < imm_se) ? 1 : 0);
 }
 
@@ -783,7 +836,7 @@ static void op_sra(Cpu* cpu, uint32_t instruction) {
     uint32_t rt = instr_t(instruction);
     uint32_t rd = instr_d(instruction);
     int32_t value_signed = (int32_t)cpu_reg(cpu, rt);
-    // Arithmetic shift preserves sign bit [cite: 707]
+    // Arithmetic shift preserves sign bit
     cpu_set_reg(cpu, rd, (uint32_t)(value_signed >> shamt));
 }
 
@@ -802,8 +855,8 @@ static void op_div(Cpu* cpu, uint32_t instruction) {
         cpu->hi = 0;
         cpu->lo = 0x80000000; // Result is MinInt
     } else { // Normal division
-        cpu->lo = (uint32_t)(n / d); // Quotient [cite: 746]
-        cpu->hi = (uint32_t)(n % d); // Remainder [cite: 745]
+        cpu->lo = (uint32_t)(n / d); // Quotient
+        cpu->hi = (uint32_t)(n % d); // Remainder
     }
     // Note: Division takes many cycles; result isn't available immediately.
     // We ignore timing for now. HI/LO access should stall if op not finished.
@@ -816,12 +869,12 @@ static void op_divu(Cpu* cpu, uint32_t instruction) {
     uint32_t n = cpu_reg(cpu, rs);
     uint32_t d = cpu_reg(cpu, rt);
 
-    if (d == 0) { // Division by zero [cite: 774]
+    if (d == 0) { // Division by zero
         cpu->hi = n;          // Remainder is numerator
         cpu->lo = 0xffffffff; // Quotient is -1
     } else { // Normal division
-        cpu->lo = n / d; // Quotient [cite: 777]
-        cpu->hi = n % d; // Remainder [cite: 776]
+        cpu->lo = n / d; // Quotient
+        cpu->hi = n % d; // Remainder
     }
     // Ignore timing stall for now.
 }
@@ -829,7 +882,7 @@ static void op_divu(Cpu* cpu, uint32_t instruction) {
 // Move From LO
 static void op_mflo(Cpu* cpu, uint32_t instruction) {
     uint32_t rd = instr_d(instruction);
-    cpu_set_reg(cpu, rd, cpu->lo); // [cite: 752]
+    cpu_set_reg(cpu, rd, cpu->lo); //
     // TODO: Should stall if previous DIV/MULT not finished.
 }
 
@@ -838,7 +891,7 @@ static void op_srl(Cpu* cpu, uint32_t instruction) {
     uint32_t shamt = instr_shift(instruction);
     uint32_t rt = instr_t(instruction);
     uint32_t rd = instr_d(instruction);
-    // Logical shift fills with zeros [cite: 753]
+    // Logical shift fills with zeros
     cpu_set_reg(cpu, rd, cpu_reg(cpu, rt) >> shamt);
 }
 
@@ -847,7 +900,7 @@ static void op_sltiu(Cpu* cpu, uint32_t instruction) {
     uint32_t imm_se = instr_imm_se(instruction); // Immediate is sign-extended
     uint32_t rt = instr_t(instruction);
     uint32_t rs = instr_s(instruction);
-    // Comparison is unsigned [cite: 761]
+    // Comparison is unsigned
     cpu_set_reg(cpu, rt, (cpu_reg(cpu, rs) < imm_se) ? 1 : 0);
 }
 
@@ -856,22 +909,30 @@ static void op_slt(Cpu* cpu, uint32_t instruction) {
     uint32_t rd = instr_d(instruction);
     uint32_t rs = instr_s(instruction);
     uint32_t rt = instr_t(instruction);
-    // Comparison is signed [cite: 784]
+    // Comparison is signed
     cpu_set_reg(cpu, rd, ((int32_t)cpu_reg(cpu, rs) < (int32_t)cpu_reg(cpu, rt)) ? 1 : 0);
 }
 
 // Move From HI
 static void op_mfhi(Cpu* cpu, uint32_t instruction) {
     uint32_t rd = instr_d(instruction);
-    cpu_set_reg(cpu, rd, cpu->hi); // [cite: 782]
+    cpu_set_reg(cpu, rd, cpu->hi); //
     // TODO: Should stall if previous DIV/MULT not finished.
 }
 
 // System Call
 static void op_syscall(Cpu* cpu, uint32_t /* instruction */) {
-    // Keep essential debug print
     printf("SYSCALL instruction executed (PC=0x%08x)\n", cpu->current_pc);
-    cpu_exception(cpu, EXCEPTION_SYSCALL); // [cite: 881]
+
+    // Get the syscall number from $a0 (register 4) based on Nocash spec for SYS-Functions
+    uint32_t syscall_num = cpu_reg(cpu, 4); 
+
+    // Call our custom BIOS syscall handler
+    handle_bios_syscall(cpu, syscall_num); // Pass the corrected syscall_num
+
+    // The rest of cpu_exception handles saving EPC, updating SR, and returning
+    // to EPC + 4, bypassing the normal BIOS exception vector for handled syscalls.
+    cpu_exception(cpu, EXCEPTION_SYSCALL);
 }
 
 // Bitwise Not Or
@@ -879,20 +940,20 @@ static void op_nor(Cpu* cpu, uint32_t instruction) {
     uint32_t rd = instr_d(instruction);
     uint32_t rs = instr_s(instruction);
     uint32_t rt = instr_t(instruction);
-    cpu_set_reg(cpu, rd, ~(cpu_reg(cpu, rs) | cpu_reg(cpu, rt))); // [cite: 1108]
+    cpu_set_reg(cpu, rd, ~(cpu_reg(cpu, rs) | cpu_reg(cpu, rt))); //
 }
 
 // Move To LO
 static void op_mtlo(Cpu* cpu, uint32_t instruction) {
     uint32_t rs = instr_s(instruction);
-    cpu->lo = cpu_reg(cpu, rs); // [cite: 891]
+    cpu->lo = cpu_reg(cpu, rs); //
     // TODO: Writing HI/LO can interfere with ongoing DIV/MULT. Ignored for now.
 }
 
 // Move To HI
 static void op_mthi(Cpu* cpu, uint32_t instruction) {
     uint32_t rs = instr_s(instruction);
-    cpu->hi = cpu_reg(cpu, rs); // [cite: 906]
+    cpu->hi = cpu_reg(cpu, rs); //
     // TODO: Timing/interlock implications ignored.
 }
 
@@ -907,7 +968,7 @@ static void op_lhu(Cpu* cpu, uint32_t instruction) {
     uint32_t rs = instr_s(instruction);
     uint32_t address = cpu_reg(cpu, rs) + offset;
     uint16_t value_loaded = interconnect_load16(cpu->inter, address); // Alignment checked in interconnect
-    // Zero-extend the 16-bit value [cite: 1044]
+    // Zero-extend the 16-bit value
     uint32_t value_zero_extended = (uint32_t)value_loaded;
     // Schedule load for delay slot
     cpu->load_reg_idx = rt;
@@ -925,7 +986,7 @@ static void op_lh(Cpu* cpu, uint32_t instruction) {
     uint32_t rs = instr_s(instruction);
     uint32_t address = cpu_reg(cpu, rs) + offset;
     uint16_t value_loaded = interconnect_load16(cpu->inter, address); // Alignment checked in interconnect
-    // Sign-extend the 16-bit value [cite: 1092]
+    // Sign-extend the 16-bit value
     uint32_t value_sign_extended = (uint32_t)(int32_t)(int16_t)value_loaded;
     // Schedule load for delay slot
     cpu->load_reg_idx = rt;
@@ -937,7 +998,7 @@ static void op_sllv(Cpu* cpu, uint32_t instruction) {
     uint32_t rd = instr_d(instruction);
     uint32_t rs = instr_s(instruction); // Register containing shift amount
     uint32_t rt = instr_t(instruction); // Register to shift
-    // Shift amount uses only lower 5 bits [cite: 1084]
+    // Shift amount uses only lower 5 bits
     uint32_t shift_amount = cpu_reg(cpu, rs) & 0x1F;
     cpu_set_reg(cpu, rd, cpu_reg(cpu, rt) << shift_amount);
 }
@@ -967,13 +1028,13 @@ static void op_srlv(Cpu* cpu, uint32_t instruction) {
 static void op_multu(Cpu* cpu, uint32_t instruction) {
     uint32_t rs = instr_s(instruction);
     uint32_t rt = instr_t(instruction);
-    // Perform 64-bit multiplication [cite: 1125]
+    // Perform 64-bit multiplication
     uint64_t val_rs = (uint64_t)cpu_reg(cpu, rs);
     uint64_t val_rt = (uint64_t)cpu_reg(cpu, rt);
     uint64_t result_64 = val_rs * val_rt;
-    // Store result in HI/LO [cite: 1125]
-    cpu->hi = (uint32_t)(result_64 >> 32);  // [cite: 1131]
-    cpu->lo = (uint32_t)(result_64 & 0xFFFFFFFF); // [cite: 1132]
+    // Store result in HI/LO
+    cpu->hi = (uint32_t)(result_64 >> 32);  //
+    cpu->lo = (uint32_t)(result_64 & 0xFFFFFFFF); //
     // Ignore timing stall for now
 }
 
@@ -989,20 +1050,20 @@ static void op_xor(Cpu* cpu, uint32_t instruction) {
 static void op_break(Cpu* cpu, uint32_t /* instruction */) {
     // Keep essential debug print
     printf("BREAK instruction executed (PC=0x%08x)\n", cpu->current_pc);
-    cpu_exception(cpu, EXCEPTION_BREAK); // [cite: 1226]
+    cpu_exception(cpu, EXCEPTION_BREAK); //
 }
 
 // Multiply (Signed)
 static void op_mult(Cpu* cpu, uint32_t instruction) {
     uint32_t rs = instr_s(instruction);
     uint32_t rt = instr_t(instruction);
-    // Perform 64-bit signed multiplication [cite: 1229]
+    // Perform 64-bit signed multiplication
     int64_t val_rs_s = (int64_t)(int32_t)cpu_reg(cpu, rs);
     int64_t val_rt_s = (int64_t)(int32_t)cpu_reg(cpu, rt);
     int64_t result_s64 = val_rs_s * val_rt_s;
     // Store result in HI/LO
-    cpu->hi = (uint32_t)((uint64_t)result_s64 >> 32); // [cite: 1236]
-    cpu->lo = (uint32_t)((uint64_t)result_s64 & 0xFFFFFFFF); // [cite: 1237]
+    cpu->hi = (uint32_t)((uint64_t)result_s64 >> 32); //
+    cpu->lo = (uint32_t)((uint64_t)result_s64 & 0xFFFFFFFF); //
     // Ignore timing stall
 }
 
@@ -1014,11 +1075,11 @@ static void op_sub(Cpu* cpu, uint32_t instruction) {
     int32_t rs_value = (int32_t)cpu_reg(cpu, rs);
     int32_t rt_value = (int32_t)cpu_reg(cpu, rt);
     int32_t result;
-    // Use GCC/Clang builtin for checked signed subtraction [cite: 1247]
+    // Use GCC/Clang builtin for checked signed subtraction
     if (__builtin_sub_overflow(rs_value, rt_value, &result)) {
         // Keep exception print
         fprintf(stderr, "SUB Signed Overflow: %d - %d (PC=0x%08x)\n", rs_value, rt_value, cpu->current_pc);
-        cpu_exception(cpu, EXCEPTION_OVERFLOW); // [cite: 1249]
+        cpu_exception(cpu, EXCEPTION_OVERFLOW); //
     } else {
         cpu_set_reg(cpu, rd, (uint32_t)result);
     }
@@ -1037,7 +1098,7 @@ static void op_cop1(Cpu* cpu, uint32_t instruction) {
     // Keep warning/exception for unimplemented hardware
     fprintf(stderr, "Warning: Unsupported COP1 (FPU) instruction: 0x%08x (PC=0x%08x)\n",
             instruction, cpu->current_pc);
-    cpu_exception(cpu, EXCEPTION_COPROCESSOR_ERROR); // [cite: 1261]
+    cpu_exception(cpu, EXCEPTION_COPROCESSOR_ERROR); //
 }
 
 // Coprocessor 2 (GTE) Opcode - Currently unimplemented
@@ -1045,7 +1106,7 @@ static void op_cop2(Cpu* cpu, uint32_t instruction) {
     // Keep error and exit for unimplemented GTE
     fprintf(stderr, "FATAL ERROR: Unhandled GTE (COP2) instruction: 0x%08x (PC=0x%08x)\n",
             instruction, cpu->current_pc);
-    exit(1); // GTE is complex, exit until implemented [cite: 1270]
+    exit(1); //
 }
 
 // Coprocessor 3 Opcode - Triggers exception
@@ -1053,10 +1114,10 @@ static void op_cop3(Cpu* cpu, uint32_t instruction) {
     // Keep warning/exception for unimplemented hardware
     fprintf(stderr, "Warning: Unsupported COP3 instruction: 0x%08x (PC=0x%08x)\n",
             instruction, cpu->current_pc);
-    cpu_exception(cpu, EXCEPTION_COPROCESSOR_ERROR); // [cite: 1264]
+    cpu_exception(cpu, EXCEPTION_COPROCESSOR_ERROR); //
 }
 
-// Load Word Left (Handles unaligned loads) [cite: 1273]
+// Load Word Left (Handles unaligned loads)
 static void op_lwl(Cpu* cpu, uint32_t instruction) {
     if ((cpu->sr & 0x10000) != 0) {
         printf("~ LWL Ignored (Cache Isolated, SR=0x%08x)\n", cpu->sr); return;
@@ -1066,7 +1127,7 @@ static void op_lwl(Cpu* cpu, uint32_t instruction) {
     uint32_t rs = instr_s(instruction);
     uint32_t addr = cpu_reg(cpu, rs) + offset;
 
-    // Merge with pending load value if target register matches [cite: 1284]
+    // Merge with pending load value if target register matches
     uint32_t current_rt_value = (cpu->load_reg_idx == rt) ? cpu->load_value : cpu->out_regs[rt];
 
     uint32_t aligned_addr = addr & ~3;
@@ -1086,7 +1147,7 @@ static void op_lwl(Cpu* cpu, uint32_t instruction) {
     cpu->load_value = merged_value;
 }
 
-// Load Word Right (Handles unaligned loads) [cite: 1273]
+// Load Word Right (Handles unaligned loads)
 static void op_lwr(Cpu* cpu, uint32_t instruction) {
      if ((cpu->sr & 0x10000) != 0) {
         printf("~ LWR Ignored (Cache Isolated, SR=0x%08x)\n", cpu->sr); return;
@@ -1096,7 +1157,7 @@ static void op_lwr(Cpu* cpu, uint32_t instruction) {
     uint32_t rs = instr_s(instruction);
     uint32_t addr = cpu_reg(cpu, rs) + offset;
 
-    // Merge with pending load value if target register matches [cite: 1284]
+    // Merge with pending load value if target register matches
     uint32_t current_rt_value = (cpu->load_reg_idx == rt) ? cpu->load_value : cpu->out_regs[rt];
 
     uint32_t aligned_addr = addr & ~3;
@@ -1116,7 +1177,7 @@ static void op_lwr(Cpu* cpu, uint32_t instruction) {
     cpu->load_value = merged_value;
 }
 
-// Store Word Left (Handles unaligned stores) [cite: 1335]
+// Store Word Left (Handles unaligned stores)
 static void op_swl(Cpu* cpu, uint32_t instruction) {
      if ((cpu->sr & 0x10000) != 0) {
         printf("~ SWL Ignored (Cache Isolated, SR=0x%08x)\n", cpu->sr); return;
@@ -1128,7 +1189,7 @@ static void op_swl(Cpu* cpu, uint32_t instruction) {
     uint32_t value_to_store = cpu_reg(cpu, rt); // Use input register set value
 
     uint32_t aligned_addr = addr & ~3;
-    // Read-Modify-Write the aligned word in memory [cite: 1338]
+    // Read-Modify-Write the aligned word in memory
     uint32_t current_mem_word = interconnect_load32(cpu->inter, aligned_addr);
     uint32_t modified_mem_word;
 
@@ -1143,7 +1204,7 @@ static void op_swl(Cpu* cpu, uint32_t instruction) {
     interconnect_store32(cpu->inter, aligned_addr, modified_mem_word);
 }
 
-// Store Word Right (Handles unaligned stores) [cite: 1335]
+// Store Word Right (Handles unaligned stores)
 static void op_swr(Cpu* cpu, uint32_t instruction) {
     if ((cpu->sr & 0x10000) != 0) {
         printf("~ SWR Ignored (Cache Isolated, SR=0x%08x)\n", cpu->sr); return;
@@ -1170,60 +1231,60 @@ static void op_swr(Cpu* cpu, uint32_t instruction) {
     interconnect_store32(cpu->inter, aligned_addr, modified_mem_word);
 }
 
-// Load Word Coprocessor 0 - Not supported [cite: 1374]
+// Load Word Coprocessor 0 - Not supported
 static void op_lwc0(Cpu* cpu, uint32_t instruction) {
     fprintf(stderr, "Warning: Unsupported LWC0 instruction: 0x%08x (PC=0x%08x)\n",
             instruction, cpu->current_pc);
-    cpu_exception(cpu, EXCEPTION_COPROCESSOR_ERROR); // [cite: 1377]
+    cpu_exception(cpu, EXCEPTION_COPROCESSOR_ERROR); //
 }
 
-// Load Word Coprocessor 1 (FPU) - Not supported [cite: 1374]
+// Load Word Coprocessor 1 (FPU) - Not supported
 static void op_lwc1(Cpu* cpu, uint32_t instruction) {
     fprintf(stderr, "Warning: Unsupported LWC1 instruction: 0x%08x (PC=0x%08x)\n",
             instruction, cpu->current_pc);
-    cpu_exception(cpu, EXCEPTION_COPROCESSOR_ERROR); // [cite: 1379]
+    cpu_exception(cpu, EXCEPTION_COPROCESSOR_ERROR); //
 }
 
 // Load Word Coprocessor 2 (GTE) - Unimplemented
 static void op_lwc2(Cpu* cpu, uint32_t instruction) {
     fprintf(stderr, "FATAL ERROR: Unhandled GTE LWC2 instruction: 0x%08x (PC=0x%08x)\n",
             instruction, cpu->current_pc);
-    exit(1); // [cite: 1381]
+    exit(1); //
 }
 
-// Load Word Coprocessor 3 - Not supported [cite: 1374]
+// Load Word Coprocessor 3 - Not supported
 static void op_lwc3(Cpu* cpu, uint32_t instruction) {
     fprintf(stderr, "Warning: Unsupported LWC3 instruction: 0x%08x (PC=0x%08x)\n",
             instruction, cpu->current_pc);
-    cpu_exception(cpu, EXCEPTION_COPROCESSOR_ERROR); // [cite: 1383]
+    cpu_exception(cpu, EXCEPTION_COPROCESSOR_ERROR); //
 }
 
-// Store Word Coprocessor 0 - Not supported [cite: 1374]
+// Store Word Coprocessor 0 - Not supported
 static void op_swc0(Cpu* cpu, uint32_t instruction) {
     fprintf(stderr, "Warning: Unsupported SWC0 instruction: 0x%08x (PC=0x%08x)\n",
             instruction, cpu->current_pc);
-    cpu_exception(cpu, EXCEPTION_COPROCESSOR_ERROR); // [cite: 1386]
+    cpu_exception(cpu, EXCEPTION_COPROCESSOR_ERROR); //
 }
 
-// Store Word Coprocessor 1 (FPU) - Not supported [cite: 1374]
+// Store Word Coprocessor 1 (FPU) - Not supported
 static void op_swc1(Cpu* cpu, uint32_t instruction) {
     fprintf(stderr, "Warning: Unsupported SWC1 instruction: 0x%08x (PC=0x%08x)\n",
             instruction, cpu->current_pc);
-    cpu_exception(cpu, EXCEPTION_COPROCESSOR_ERROR); // [cite: 1388]
+    cpu_exception(cpu, EXCEPTION_COPROCESSOR_ERROR); //
 }
 
 // Store Word Coprocessor 2 (GTE) - Unimplemented
 static void op_swc2(Cpu* cpu, uint32_t instruction) {
     fprintf(stderr, "FATAL ERROR: Unhandled GTE SWC2 instruction: 0x%08x (PC=0x%08x)\n",
             instruction, cpu->current_pc);
-    exit(1); // [cite: 1390]
+    exit(1); //
 }
 
-// Store Word Coprocessor 3 - Not supported [cite: 1374]
+// Store Word Coprocessor 3 - Not supported
 static void op_swc3(Cpu* cpu, uint32_t instruction) {
     fprintf(stderr, "Warning: Unsupported SWC3 instruction: 0x%08x (PC=0x%08x)\n",
             instruction, cpu->current_pc);
-    cpu_exception(cpu, EXCEPTION_COPROCESSOR_ERROR); // [cite: 1392]
+    cpu_exception(cpu, EXCEPTION_COPROCESSOR_ERROR); //
 }
 
 // Illegal/Unhandled Instruction Handler
@@ -1231,5 +1292,5 @@ static void op_illegal(Cpu* cpu, uint32_t instruction) {
     // Keep essential error print for illegal instructions
     fprintf(stderr, "Error: Illegal/Unhandled instruction 0x%08x encountered at PC=0x%08x\n",
             instruction, cpu->current_pc);
-    cpu_exception(cpu, EXCEPTION_ILLEGAL_INSTRUCTION); // [cite: 1473]
+    cpu_exception(cpu, EXCEPTION_ILLEGAL_INSTRUCTION); //
 }
