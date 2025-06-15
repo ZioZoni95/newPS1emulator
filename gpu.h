@@ -10,6 +10,9 @@
 #include "renderer.h" // Includes OpenGL renderer definitions
 #include "vram.h"     // Includes VRAM definitions
 
+
+struct Interconnect; // <<< ADD THIS FORWARD DECLARATION
+
 // --- GPU Data Types & Enums ---
 
 // Texture Color Depth (from STAT[8:7])
@@ -146,6 +149,8 @@ typedef struct Gpu { // Define struct Gpu
 
     // --- Renderer ---
     Renderer renderer;                 // Handles OpenGL drawing operations
+
+    struct Interconnect* inter;
 
 } Gpu;
 
