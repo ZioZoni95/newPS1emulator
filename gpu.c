@@ -8,7 +8,6 @@
 #include <stdlib.h> // For exit()
 #include <string.h> // For memset
 #include "renderer.h"
-#include "interconnect.h"
 // vram.h is implicitly included via gpu.h
 
 // --- Forward Declarations for GP0 Handlers (Internal linkage) ---
@@ -245,8 +244,6 @@ static void gp0_drawing_offset(Gpu* gpu) {
     gpu->drawing_y_offset = offset_y;
     // printf("GP0(0xE5): Draw Offset set = (%d,%d)\n", offset_x, offset_y);
     renderer_set_draw_offset(&gpu->renderer, offset_x, offset_y); // Update renderer uniform
-    interconnect_request_irq(gpu->inter, IRQ_VBLANK);
-
     // --- TEMPORARY HACK from guide ---
     // printf("GP0(0xE5): Triggering display (temporary hack)\n");
     renderer_display(&gpu->renderer); // Force draw & display swap

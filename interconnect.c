@@ -44,7 +44,6 @@ void interconnect_init(Interconnect* inter, Bios* bios, Ram* ram) {
     dma_init(&inter->dma); // Initialize DMA controller state
     gpu_init(&inter->gpu); // Initialize GPU state (now contains Renderer)
 
-    inter->gpu.inter = inter; // <<< ADD THIS LINE
 
     cdrom_init(&inter->cdrom,inter);
 
@@ -591,7 +590,8 @@ void interconnect_store8(Interconnect* inter, uint32_t address, uint8_t value) {
     }
     // CDROM Registers
     if (physical_addr >= 0x1f801800 && physical_addr <= 0x1f801803) {
-        cdrom_write(&inter->cdrom, physical_addr, value);
+        printf("~ Write8 to CDROM Reg (0x%08x) = 0x%02x (Ignoring)\n", physical_addr, value);
+        // TODO: Implement CDROM register writes
         return;
     }
 
