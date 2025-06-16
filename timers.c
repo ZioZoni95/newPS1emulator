@@ -7,14 +7,10 @@
 #include <math.h> // For floor()
 
 // --- Clock Frequencies (Approximations) ---
-// PSX CPU Clock ~ 33.8688 MHz
 #define PSX_CPU_HZ 33868800.0
-// System Clock is often assumed to be CPU Clock / 1, but some docs say /2? Let's use /1 for now.
 #define PSX_SYSCLK_HZ (PSX_CPU_HZ / 1.0)
-// Dot Clock varies based on GPU settings. Common values ~25.175MHz or ~33.567MHz.
-// We need access to GPU state to determine the real value.
-// Using CPU clock as a placeholder is very inaccurate!
-#define APPROX_DOTCLOCK_HZ PSX_CPU_HZ // <<< VERY ROUGH PLACEHOLDER
+// Define the standard NTSC dot clock frequency from PSXSPX Specifications
+#define NTSC_DOTCLOCK_HZ 25175000.0 // <<< ADD THIS
 
 
 /**
@@ -179,7 +175,7 @@ void timers_step(Timers* timers, uint32_t cpu_cycles) {
 
     // Get current GPU state needed for DotClock/HBlank (Placeholder access)
     Gpu* gpu = &timers->inter->gpu; // Assumes Interconnect struct has Gpu gpu;
-    double current_dot_clock_hz = APPROX_DOTCLOCK_HZ;
+    double current_dot_clock_hz = NTSC_DOTCLOCK_HZ;
     // TODO: Calculate actual current_dot_clock_hz from gpu state (hres, vmode)
     // TODO: Get HBlank count if simulating GPU timing for Timer 1 source 3
 

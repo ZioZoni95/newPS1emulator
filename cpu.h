@@ -161,7 +161,7 @@ void decode_and_execute(Cpu* cpu, uint32_t instruction);
 void cpu_exception(Cpu* cpu, ExceptionCause cause);
 
 // --- BIOS SYSCALL handler prototype (needs Cpu to be declared) ---
-static void handle_bios_syscall(Cpu* cpu, uint32_t syscall_num);
+static bool handle_bios_syscall(Cpu* cpu, uint32_t syscall_num);
 
 // --- Register Access ---
 /**

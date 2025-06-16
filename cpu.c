@@ -98,45 +98,32 @@ void cpu_branch(Cpu* cpu, uint32_t offset_se) {
     // The instruction handler (e.g., op_beq) MUST set cpu->branch_taken = true after calling this.
 }
 
-// --- BIOS SYSCALL Handling ---
-static void handle_bios_syscall(Cpu* cpu, uint32_t syscall_num_from_a0) { // Renamed parameter for clarity
-    // According to Nocash PSX spec, SYS-Functions use R4 ($a0) for function number.
-    // Return value (if any) is typically in R2 ($v0).
+/**
+ * @brief Handles specific BIOS A, B, and C function calls.
+ * @return Returns true if the syscall was handled, false otherwise.
+ */
+static bool handle_bios_syscall(Cpu* cpu, uint32_t syscall_num) {
+    switch (syscall_num) {
+        case 0x01: // EnterCriticalSection
+            cpu->sr &= ~1; // Disable interrupts
+            return true;   // Syscall was handled
 
-    printf("BIOS SYSCALL: 0x%02x called at PC=0x%08x (from $a0)\n", syscall_num_from_a0, cpu->epc); // Log from $a0
+        case 0x02: // ExitCriticalSection
+            cpu->sr |= 1;  // Enable interrupts
+            return true;   // Syscall was handled
 
-    switch (syscall_num_from_a0) { // Use syscall_num_from_a0 for dispatch
-        case 0x00: // NoFunction()
-            // printf("  -> NoFunction (0x00)\n"); // Optional detailed log
-            // Simply return.
-            break;
-        case 0x01: // EnterCriticalSection()
-            // printf("  -> EnterCriticalSection (0x01)\n"); // Optional detailed log
-            // This would typically involve setting SR bits to disable interrupts.
-            // For now, just acknowledge.
-            break;
-        case 0x02: // ExitCriticalSection()
-            // printf("  -> ExitCriticalSection (0x02)\n"); // Optional detailed log
-            // This would typically involve restoring SR bits to enable interrupts.
-            // For now, just acknowledge.
-            break;
-        case 0x03: // ChangeThreadSubFunction(addr)
-            // This is more complex, involving threading. For now, acknowledge.
-            // printf("  -> ChangeThreadSubFunction (0x03) called with addr=0x%08x\n", cpu_reg(cpu, 5)); // $a1 for addr
-            break;
-
-        // SYS(04h..FFFFFFFFh) calls DeliverEvent(F0000010h,4000h)
-        // This is a broad range, so we can handle it in default or a specific range check.
-        // For now, let's let default handle it, or you can add a case for a specific range if needed.
-        // If the BIOS keeps looping on 0x04 or higher, we might need to simulate DeliverEvent.
+        case 0x19: // B_clr_event(event)
+            // Stub - does nothing, but we acknowledge it as handled.
+            return true;   // Syscall was handled
+        
+        // Add more handled syscalls here as they appear in the logs.
 
         default:
-            fprintf(stderr, "Unhandled BIOS SYSCALL 0x%02x (from $a0) at PC=0x%08x. Returning 0 to $v0.\n",
-                    syscall_num_from_a0, cpu->epc);
-            cpu_set_reg(cpu, 2, 0); // Set $v0 (register 2) to 0 (common for success/dummy return)
-            break;
+            // We encountered a syscall we don't know how to handle.
+            return false;
     }
 }
+
 
 // --- Exception Handling ---
 /**
@@ -921,18 +908,21 @@ static void op_mfhi(Cpu* cpu, uint32_t instruction) {
 }
 
 // System Call
-static void op_syscall(Cpu* cpu, uint32_t /* instruction */) {
-    printf("SYSCALL instruction executed (PC=0x%08x)\n", cpu->current_pc);
-
-    // Get the syscall number from $a0 (register 4) based on Nocash spec for SYS-Functions
+static void op_syscall(Cpu* cpu, uint32_t instruction) {
+    // Get the syscall number from register $a0
     uint32_t syscall_num = cpu_reg(cpu, 4); 
 
-    // Call our custom BIOS syscall handler
-    handle_bios_syscall(cpu, syscall_num); // Pass the corrected syscall_num
+    // Attempt to handle it directly
+    bool was_handled = handle_bios_syscall(cpu, syscall_num);
 
-    // The rest of cpu_exception handles saving EPC, updating SR, and returning
-    // to EPC + 4, bypassing the normal BIOS exception vector for handled syscalls.
-    cpu_exception(cpu, EXCEPTION_SYSCALL);
+    // If the handler returned false, it means we don't have this
+    // syscall implemented yet. In that case, trigger a full exception
+    // so we can see it in the logs and debug it.
+    if (!was_handled) {
+        printf("Unhandled BIOS Syscall: 0x%02x, triggering full exception.\n", syscall_num);
+        cpu_exception(cpu, EXCEPTION_SYSCALL);
+    }
+    // If it was handled, we do nothing and simply proceed to the next instruction.
 }
 
 // Bitwise Not Or
