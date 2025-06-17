@@ -182,7 +182,10 @@ int main(int argc, char *argv[]) {
         // <<< UPDATED: Step the CD-ROM scheduler >>>
         // This is critical for handling timed CD-ROM commands. It must be called
         // regularly, passing the number of CPU cycles that have just run.
+        interconnect_request_irq(&interconnect_state, IRQ_VBLANK);
+
         cdrom_step(&interconnect_state.cdrom, cycles_per_frame);
+
 
         total_cycles += cycles_per_frame;
 

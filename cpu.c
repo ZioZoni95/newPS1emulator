@@ -451,7 +451,7 @@ static void op_ori(Cpu* cpu, uint32_t instruction) {
 static void op_sw(Cpu* cpu, uint32_t instruction) {
     if ((cpu->sr & 0x10000) != 0) { // Check cache isolation bit
         // Debug print kept as it indicates unusual state
-        printf("~ SW Ignored (Cache Isolated, SR=0x%08x)\n", cpu->sr);
+      //  printf("~ SW Ignored (Cache Isolated, SR=0x%08x)\n", cpu->sr);
         return;
     }
     uint32_t offset = instr_imm_se(instruction);

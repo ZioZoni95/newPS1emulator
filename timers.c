@@ -6,11 +6,11 @@
 #include <string.h>
 #include <math.h> // For floor()
 
-// --- Clock Frequencies (Approximations) ---
 #define PSX_CPU_HZ 33868800.0
-#define PSX_SYSCLK_HZ (PSX_CPU_HZ / 1.0)
-// Define the standard NTSC dot clock frequency from PSXSPX Specifications
-#define NTSC_DOTCLOCK_HZ 25175000.0 // <<< ADD THIS
+#define PSX_SYSCLK_HZ PSX_CPU_HZ // System Clock is the same as the CPU clock for timers
+#define DOTCLOCK_NTSC_HZ 25175000.0
+#define DOTCLOCK_PAL_HZ 25200000.0 // PAL frequency, for completeness
+#define HBLANK_NTSC_HZ 15625.0 // Horizontal blanking frequency for NTSC
 
 
 /**
@@ -173,96 +173,91 @@ void timer_write32(Timers* timers, int timer_index, uint32_t offset, uint32_t va
 void timers_step(Timers* timers, uint32_t cpu_cycles) {
     if (cpu_cycles == 0) return;
 
-    // Get current GPU state needed for DotClock/HBlank (Placeholder access)
-    Gpu* gpu = &timers->inter->gpu; // Assumes Interconnect struct has Gpu gpu;
-    double current_dot_clock_hz = NTSC_DOTCLOCK_HZ;
-    // TODO: Calculate actual current_dot_clock_hz from gpu state (hres, vmode)
-    // TODO: Get HBlank count if simulating GPU timing for Timer 1 source 3
-
     for (int i = 0; i < 3; ++i) {
         Timer* t = &timers->timers[i];
-        double timer_clock_hz = 0.0;
-        uint32_t external_ticks = 0; // Ticks from HBlank etc.
 
-        // --- Determine Effective Clock Source ---
-        switch (t->clock_source) {
-            case 0: timer_clock_hz = PSX_SYSCLK_HZ; break;
-            case 1: timer_clock_hz = (i == 2) ? (PSX_SYSCLK_HZ / 8.0) : current_dot_clock_hz; break; // Timer2 has Sys/8 if bit 9 is set
-            case 2: timer_clock_hz = PSX_SYSCLK_HZ / 8.0; break;
-            case 3: if (i == 1) { /* external_ticks = num_hblanks_in_cpu_cycles; */ } break; // Needs GPU timing
-        }
-
-        // --- Handle Sync Modes (PLACEHOLDER) ---
-        bool paused_by_sync = false;
+        // --- 1. Determine if timer is paused by Sync Mode ---
+        bool is_paused = false;
         if (t->sync_enable) {
-            // TODO: Implement sync logic based on GPU VBlank/HBlank state
-            // E.g., if (mode == 0 && !in_hblank_or_vblank) paused_by_sync = true;
-            // E.g., if ((mode==1||mode==2) && hblank_just_occurred) t->counter = 0;
+            // NOTE: Full sync implementation requires GPU timing signals.
+            // For now, we assume mode 0 (pause) and that they are not paused,
+            // as this is enough to get past the BIOS hang.
+            // A full implementation would check if we are currently inside VBlank/HBlank.
+            is_paused = false; 
         }
 
-        if (paused_by_sync) {
-            timers->fractional_ticks[i] = 0.0; // Reset fractional part if paused? Maybe not.
-            continue;
+        if (is_paused) {
+            continue; // Timer is paused, do nothing for it this step.
         }
+        double timer_clock_hz = 0.0;
 
-        // --- Calculate Ticks To Add ---
-        double ticks_to_add = timers->fractional_ticks[i]; // Start with leftover fraction
-        if (timer_clock_hz > 0) {
+        
+        // --- 2. Determine Clock Source and Ticks to Add ---
+        double ticks_to_add = timers->fractional_ticks[i]; // Start with leftover fraction from last step
+
+        // Timer 0: System Clock or Dot Clock
+        if (i == 0) {
+            timer_clock_hz = (t->clock_source == 0) ? PSX_SYSCLK_HZ : DOTCLOCK_NTSC_HZ; // Simplified NTSC
             ticks_to_add += (double)cpu_cycles * (timer_clock_hz / PSX_CPU_HZ);
         }
-        ticks_to_add += external_ticks; // Add ticks from Hblank etc.
-
-        uint32_t whole_ticks = (uint32_t)floor(ticks_to_add);
-        timers->fractional_ticks[i] = ticks_to_add - floor(ticks_to_add); // Store remainder
-
-        if (whole_ticks == 0) continue; // No whole ticks elapsed
-
-        // --- Increment Counter & Check Flags ---
-        uint16_t old_counter = t->counter;
-        uint64_t next_counter_val_64 = (uint64_t)old_counter + whole_ticks;
-        t->counter = (uint16_t)next_counter_val_64; // Assign wrapped 16-bit value
-
-        bool target_just_reached = false;
-        bool overflow_just_occurred = (next_counter_val_64 > 0xFFFF);
-
-        // Check if target was reached or passed during this step interval
-        if (t->target != 0 && old_counter < t->target && next_counter_val_64 >= t->target) {
-            target_just_reached = true;
-        }
-        // Handle rarer case where counter wraps *past* target in one large step
-        if (t->target != 0 && overflow_just_occurred && t->target >= old_counter) {
-             target_just_reached = true;
-        }
-
-        // Update sticky flags if condition met this step
-        if (target_just_reached) t->reached_target_flag = true;
-        if (overflow_just_occurred) t->reached_ffff_flag = true;
-
-        // --- Handle Reset ---
-        if (target_just_reached && t->reset_on_target) {
-            t->counter = 0;
-            // Sticky flags are NOT reset here, only by writing Mode reg
-        }
-
-        // --- Handle Interrupt Request ---
-        bool should_request_irq = (t->reached_target_flag && t->irq_on_target) ||
-                                  (t->reached_ffff_flag && t->irq_on_ffff);
-
-        if (should_request_irq) {
-            // Only set internal request flag if condition newly met this step?
-            // Or just set it if condition met and enabled? Let's assume the latter for repeat mode.
-            bool condition_newly_met = (target_just_reached && t->irq_on_target) ||
-                                       (overflow_just_occurred && t->irq_on_ffff);
-
-            if (condition_newly_met || t->irq_repeat) {
-                 // If repeating, or if newly met (for one-shot or repeat)
-                 t->interrupt_requested = true;
-                 uint32_t irq_line = IRQ_TIMER0 + i;
-                 interconnect_request_irq(timers->inter, irq_line);
+        // Timer 1: System Clock or H-Blank
+        else if (i == 1) {
+            if (t->clock_source <= 1) { // 0 or 1
+                 timer_clock_hz = PSX_SYSCLK_HZ; // Sources 0 and 1 are System Clock for Timer 1
+                 ticks_to_add += (double)cpu_cycles * (timer_clock_hz / PSX_CPU_HZ);
+            } else { // Source 2 or 3 is H-Blank
+                // TODO: This requires accurate GPU dot/line counting. For now, we can approximate.
+                ticks_to_add += (double)cpu_cycles * (HBLANK_NTSC_HZ / PSX_CPU_HZ);
             }
         }
-        // How does one-shot clear? Writing to Mode clears sticky flags,
-        // which prevents should_request_irq from being true again until flags re-set.
-        // So, no need to explicitly clear t->interrupt_requested for one-shot here.
+        // Timer 2: System Clock or System Clock / 8
+        else { // i == 2
+             timer_clock_hz = (t->clock_source <= 1) ? PSX_SYSCLK_HZ : (PSX_SYSCLK_HZ / 8.0);
+             ticks_to_add += (double)cpu_cycles * (timer_clock_hz / PSX_CPU_HZ);
+        }
+
+        uint32_t whole_ticks = (uint32_t)floor(ticks_to_add);
+        if (whole_ticks == 0) {
+             timers->fractional_ticks[i] = ticks_to_add; // Save fraction and continue
+             continue;
+        }
+        timers->fractional_ticks[i] = ticks_to_add - (double)whole_ticks; // Keep the new remainder
+
+        // --- 3. Increment Counter and Check for Events ---
+        uint32_t old_counter = t->counter;
+        t->counter += whole_ticks;
+
+        // Check for target reached
+        if (old_counter < t->target && t->counter >= t->target) {
+            t->reached_target_flag = true;
+        }
+
+        // Check for overflow (0xFFFF -> 0x0000)
+        if (t->counter < old_counter) { // Simple wrap-around check
+            t->reached_ffff_flag = true;
+        }
+
+        // --- 4. Handle Interrupts ---
+        bool irq = false;
+        if (t->irq_on_target && t->reached_target_flag) {
+            irq = true;
+        }
+        if (t->irq_on_ffff && t->reached_ffff_flag) {
+            irq = true;
+        }
+
+        if (irq) {
+            // Set the interrupt request bit in the mode register
+            t->mode |= (1 << 10);
+            // Request the interrupt line from the interconnect
+            interconnect_request_irq(timers->inter, IRQ_TIMER0 + i);
+        }
+
+        // --- 5. Handle Counter Reset ---
+        if (t->reset_on_target && t->reached_target_flag) {
+            t->counter = 0;
+            // IMPORTANT: Per specs, sticky flags are only reset by writing to the Mode register,
+            // so we don't clear them here. This is correct.
+        }
     }
 }

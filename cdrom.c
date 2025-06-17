@@ -116,6 +116,7 @@ static void trigger_interrupt(Cdrom* cdrom, uint8_t int_code) {
 // --- Command Handlers (This is where the main logic is filled in) ---
 
 static void cmd_get_stat(Cdrom* cdrom) {
+    printf("~ CDROM CMD: GetStat (0x01)\n");    
     // <<< MODIFIED >>>
     fifo_clear(&cdrom->response_fifo);
     update_status_register(cdrom);
@@ -230,13 +231,24 @@ static void cmd_test(Cdrom* cdrom) {
 }
 
 // Stubs for other commands - no changes needed yet
-static void cmd_set_loc(Cdrom* cdrom) { printf("~ CDROM CMD: SetLoc (0x02) - STUB\n"); }
-static void cmd_read_n(Cdrom* cdrom) { printf("~ CDROM CMD: ReadN (0x06) - STUB\n"); }
-static void cmd_pause(Cdrom* cdrom) { printf("~ CDROM CMD: Pause (0x09) - STUB\n"); }
-static void cmd_seek_l(Cdrom* cdrom) { printf("~ CDROM CMD: SeekL (0x15) - STUB\n"); }
-static void cmd_set_mode(Cdrom* cdrom) { printf("~ CDROM CMD: SetMode (0x0E) - STUB\n"); }
-static void cmd_stop(Cdrom* cdrom) { printf("~ CDROM CMD: Stop (0x08) - STUB\n"); }
+static void cmd_pause(Cdrom* cdrom) {
+    printf("~ CDROM CMD: Pause (0x09)\n");
+    cdrom->current_state = CD_STATE_CMD_EXEC;
+    cdrom->status |= STAT_BUSY;
+    update_status_register(cdrom);
+    fifo_push(&cdrom->response_fifo, cdrom->status);
+    trigger_interrupt(cdrom, 3);
+    cdrom_schedule_event(cdrom, 150000, cmd_pause_complete);
+}
 
+static void cmd_pause_complete(Cdrom* cdrom) {
+    printf("  CDROM Pause - Complete\n");
+    cdrom->status &= ~STAT_BUSY;
+    cdrom->current_state = CD_STATE_IDLE;
+    update_status_register(cdrom);
+    fifo_push(&cdrom->response_fifo, cdrom->status);
+    trigger_interrupt(cdrom, 2);
+}
 
 // --- Main command dispatcher (no changes needed) ---
 static void cdrom_handle_command(Cdrom* cdrom, uint8_t command) {
@@ -274,6 +286,35 @@ void cdrom_init(Cdrom* cdrom, struct Interconnect* inter) {
     fifo_init(&cdrom->response_fifo);
     printf("  CDROM Initial Status: 0x%02x\n", cdrom->status);
 }
+
+static void cmd_set_loc(Cdrom* cdrom) {
+    printf("~ CDROM CMD: SetLoc (0x02)\n");
+    if (cdrom->param_fifo.count < 3) {
+        printf("  ERROR: SetLoc requires 3 parameters.\n");
+        return;
+    }
+    uint8_t m = bcd_to_int(fifo_pop(&cdrom->param_fifo));
+    uint8_t s = bcd_to_int(fifo_pop(&cdrom->param_fifo));
+    uint8_t f = bcd_to_int(fifo_pop(&cdrom->param_fifo));
+    cdrom->target_lba = (m * 60 * 75) + (s * 75) + f - 150;
+    printf("  Set LBA to %u (M:%u S:%u F:%u)\n", cdrom->target_lba, m, s, f);
+
+    cdrom->current_state = CD_STATE_CMD_EXEC;
+    cdrom->status |= STAT_BUSY;
+    cdrom_schedule_event(cdrom, 10000, cmd_set_loc_complete);
+}
+
+// ADDED completion handler
+static void cmd_set_loc_complete(Cdrom* cdrom) {
+    printf("~ CDROM CMD set_loc_complete)\n");
+
+    cdrom->status &= ~STAT_BUSY;
+    update_status_register(cdrom);
+    fifo_push(&cdrom->response_fifo, cdrom->status);
+    trigger_interrupt(cdrom, 3); // INT3
+    cdrom->current_state = CD_STATE_IDLE;
+}
+
 
 // cdrom_load_disc: No changes needed to your fixed version
 bool cdrom_load_disc(Cdrom* cdrom, const char* bin_filename) {
@@ -353,6 +394,55 @@ void cdrom_write_register(Cdrom* cdrom, uint32_t addr, uint8_t value) {
             }
             break;
     }
+}
+
+static void cmd_read_n(Cdrom* cdrom) {
+    printf("~ CDROM CMD: ReadN (0x06)\n");
+    cdrom->current_state = CD_STATE_CMD_EXEC;
+    cdrom->status |= STAT_BUSY;
+    update_status_register(cdrom);
+    fifo_push(&cdrom->response_fifo, cdrom->status);
+    trigger_interrupt(cdrom, 3); // First response
+    cdrom_schedule_event(cdrom, 200000, cmd_read_n_complete);
+}
+
+// ADDED completion handler
+static void cmd_read_n_complete(Cdrom* cdrom) {
+    printf("  CDROM ReadN - Complete\n");
+    // This is a dummy read. We don't load from the file yet.
+    // We just signal that data is ready.
+    cdrom->status &= ~STAT_BUSY;
+    cdrom->status |= STAT_DTEN; // Set Data FIFO not empty flag
+    update_status_register(cdrom);
+    fifo_push(&cdrom->response_fifo, cdrom->status);
+    trigger_interrupt(cdrom, 1); // INT1: Data Ready
+    cdrom->current_state = CD_STATE_READING;
+}
+
+static void cmd_seek_l(Cdrom* cdrom) {
+    printf("~ CDROM CMD: SeekL (0x15) - Forwarding to SetLoc\n");
+    cmd_set_loc(cdrom); // SeekL is mechanically the same as SetLoc for our purposes
+}
+
+static void cmd_set_mode(Cdrom* cdrom) {
+    uint8_t mode = fifo_pop(&cdrom->param_fifo);
+    printf("~ CDROM CMD: SetMode (0x0E) to 0x%02x\n", mode);
+    cdrom->double_speed = (mode & 0x80) != 0;
+    cdrom->is_cd_da = (mode & 0x40) != 0;
+    cdrom->sector_size_is_2340 = (mode & 0x20) != 0;
+
+    update_status_register(cdrom);
+    fifo_push(&cdrom->response_fifo, cdrom->status);
+    trigger_interrupt(cdrom, 3); // INT3
+}
+
+static void cmd_stop(Cdrom* cdrom) {
+    printf("~ CDROM CMD: Stop (0x08)\n");
+    cdrom->current_state = CD_STATE_IDLE;
+    cdrom->status &= ~(STAT_BUSY | STAT_MOTORON);
+    update_status_register(cdrom);
+    fifo_push(&cdrom->response_fifo, cdrom->status);
+    trigger_interrupt(cdrom, 2); // INT2
 }
 
 // cdrom_step: No changes needed
