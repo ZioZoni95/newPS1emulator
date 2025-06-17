@@ -137,46 +137,27 @@ void cpu_exception(Cpu* cpu, ExceptionCause cause) {
     // Determine exception handler address based on SR bit 22 (BEV)
     uint32_t handler_addr = (cpu->sr & (1 << 22)) ? 0xbfc00180  : 0x80000080;
 
-    // Update Status Register (SR): Push mode bits onto the stack
-    // This disables interrupts (sets IEC=0) and forces kernel mode (KUc=0) in the new state.
-    uint32_t mode_stack = cpu->sr & 0x3f;    // Get bits 5:0 (KU/IE stack)
-    cpu->sr &= ~0x3f;                       // Clear bits 5:0
-    cpu->sr |= (mode_stack << 2) & 0x3f;    // Shift stack left, pushing 0s into KUc/IEc
+    // --- NEW: Correct SR register update ---
+    // Shift the 3 pairs of User/Interrupt Enable bits to the left,
+    // effectively pushing a new entry (with interrupts disabled) onto the stack.
+    uint32_t mode_stack = cpu->sr & 0x3F;
+    cpu->sr &= ~0x3F; // Clear the 6 bits
+    cpu->sr |= (mode_stack << 2) & 0x3F; // Shift and re-insert
 
-    // Update Cause Register: Set ExcCode (bits 6:2)
-    // Preserve Interrupt Pending bits (15:8), clear the rest for now
-    uint32_t ip_bits = cpu->cause & 0xFF00; // Preserve IP bits
-    cpu->cause = ip_bits | ((uint32_t)cause << 2); // Set ExcCode
+    // Update the Cause register
+    // Set the exception code (bits 6:2)
+    cpu->cause = (cause << 2);
 
-    // Update EPC and Cause BD bit based on delay slot
+    // Set the EPC to the correct return address
     if (cpu->in_delay_slot) {
         cpu->epc = cpu->current_pc - 4; // EPC points to the branch instruction
-        cpu->cause |= (1 << 31);        // Set the Branch Delay (BD) bit
+        cpu->cause |= (1 << 31);       // Set the Branch Delay (BD) bit in Cause
     } else {
         cpu->epc = cpu->current_pc;     // EPC points to the faulting instruction
-        cpu->cause &= ~(1 << 31);       // Ensure BD bit is clear
+        cpu->cause &= ~(1 << 31);      // Clear the Branch Delay (BD) bit
     }
 
-    // --- IMPORTANT MODIFICATION: SYSCALL Specific Dispatch ---
-    if (cause == EXCEPTION_SYSCALL) {
-        // For SYSCALLs, the BIOS expects a specific return behavior.
-        // It reads the syscall number from $v0, jumps to its handler,
-        // and then returns to EPC + 4 (instruction after SYSCALL).
-        // By handling the syscall here directly, we are mimicking the BIOS's dispatcher.
-        uint32_t syscall_num = cpu_reg(cpu, 2); // Get SYSCALL number from $v0
-        handle_bios_syscall(cpu, syscall_num); // Process the syscall
-
-        // After processing, immediately set PC to return from syscall.
-        // The `rfe` instruction in the real BIOS's exception handler would normally do this.
-        // By setting it here, we bypass the need to emulate that `rfe` logic for SYSCALLs
-        // in the immediate term, letting the BIOS progress.
-        cpu->pc = cpu->epc + 4; // Return to the instruction *after* the SYSCALL
-        cpu->next_pc = cpu->pc + 4; // Set next_pc sequentially
-        return; // Exit exception handling, as syscall is "handled" directly
-    }
-    // --- END SYSCALL MODIFICATION ---
-
-    // For all other exceptions, jump to the generic exception handler vector.
+    // Jump to the exception handler
     cpu->pc = handler_addr;
     cpu->next_pc = cpu->pc + 4;
 }

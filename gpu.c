@@ -189,8 +189,22 @@ static void gp0_fill_rectangle(Gpu* gpu) {
 /** GP0(0xE1): Set Draw Mode */
 static void gp0_draw_mode(Gpu* gpu) {
     uint32_t value = gpu->gp0_command_buffer.buffer[0];
-    gpu->page_base_x = (uint8_t)(value & 0xF);
-    gpu->page_base_y = (uint8_t)((value >> 4) & 1);
+    
+    // --- THIS IS THE FINAL FIX ---
+    // We must write to the tpage_x_base and tpage_y_base variables
+    // that our textured quad function reads from.
+    
+    uint8_t tpage_x_field = value & 0xF;
+    uint8_t tpage_y_field = (value >> 4) & 1;
+
+    // Use the correct struct members we added in renderer.h
+    gpu->tpage_x_base = tpage_x_field * 64;
+    gpu->tpage_y_base = tpage_y_field * 256;
+    
+    printf("  -> Draw Mode: TPage base set to (%u, %u)\n", gpu->tpage_x_base, gpu->tpage_y_base);
+    // --- END FIX ---
+    
+    // The rest of the function remains the same
     gpu->semi_transparency = (uint8_t)((value >> 5) & 3);
     switch ((value >> 7) & 3) {
         case 0: gpu->texture_depth = T4Bit; break;
@@ -200,12 +214,10 @@ static void gp0_draw_mode(Gpu* gpu) {
     }
     gpu->dithering = ((value >> 9) & 1);
     gpu->draw_to_display = ((value >> 10) & 1);
-    gpu->texture_disable = ((value >> 11) & 1);       // Affects textured primitives
-    gpu->rectangle_texture_x_flip = ((value >> 12) & 1); // Affects texture sampling
-    gpu->rectangle_texture_y_flip = ((value >> 13) & 1); // Affects texture sampling
-    // printf("GP0(0xE1): Draw Mode set\n"); // Optional debug
+    gpu->texture_disable = ((value >> 11) & 1);
+    gpu->rectangle_texture_x_flip = ((value >> 12) & 1);
+    gpu->rectangle_texture_y_flip = ((value >> 13) & 1);
 }
-
 /** GP0(0xE2): Set Texture Window */
 static void gp0_texture_window(Gpu* gpu) {
      uint32_t value = gpu->gp0_command_buffer.buffer[0];
@@ -272,19 +284,42 @@ static void gp0_quad_mono_opaque(Gpu* gpu) {
 
 /** GP0(0x2C): Textured Opaque Quadrilateral with Blend */
 static void gp0_quad_texture_blend_opaque(Gpu* gpu) {
+    // This is the handler for GP0 command 0x2C
+
+    // 1. Check if we have received all the words for this command
     if (gpu->gp0_command_buffer.count < 9) {
-         fprintf(stderr, "GP0(0x2C) Error: Expected 9 words, got %u\n", gpu->gp0_command_buffer.count); return; }
-    RendererPosition p[4]; uint32_t uv[4]; uint16_t clut, texpage;
-    p[0] = (RendererPosition){ .x=(GLshort)(int16_t)(gpu->gp0_command_buffer.buffer[1]&0xFFFF), .y=(GLshort)(int16_t)(gpu->gp0_command_buffer.buffer[1]>>16) }; uv[0]=gpu->gp0_command_buffer.buffer[2];
-    p[1] = (RendererPosition){ .x=(GLshort)(int16_t)(gpu->gp0_command_buffer.buffer[3]&0xFFFF), .y=(GLshort)(int16_t)(gpu->gp0_command_buffer.buffer[3]>>16) }; uv[1]=gpu->gp0_command_buffer.buffer[4];
-    p[2] = (RendererPosition){ .x=(GLshort)(int16_t)(gpu->gp0_command_buffer.buffer[5]&0xFFFF), .y=(GLshort)(int16_t)(gpu->gp0_command_buffer.buffer[5]>>16) }; uv[2]=gpu->gp0_command_buffer.buffer[6];
-    p[3] = (RendererPosition){ .x=(GLshort)(int16_t)(gpu->gp0_command_buffer.buffer[7]&0xFFFF), .y=(GLshort)(int16_t)(gpu->gp0_command_buffer.buffer[7]>>16) }; uv[3]=gpu->gp0_command_buffer.buffer[8];
-    clut = (uint16_t)(uv[0] >> 16); texpage = (uint16_t)(uv[1] >> 16);
-    (void)clut; (void)texpage; (void)uv; // Suppress unused warnings for now
-    RendererColor placeholder = { .r = 0x80, .g = 0x00, .b = 0x00 }; // Placeholder color
-    RendererColor c[4] = {placeholder, placeholder, placeholder, placeholder};
-    // printf("GP0(0x2C): Tex Quad Blend ... (Using Placeholder Color)\n");
-    renderer_push_quad(&gpu->renderer, p, c); // Pass p and c (positions, colors)
+        fprintf(stderr, "GP0(0x2C) Error: Expected 9 words, got %u\n", gpu->gp0_command_buffer.count);
+        return;
+    }
+
+    // 2. Create arrays to hold the final data for the renderer
+    RendererPosition p[4];
+    RendererTexCoord t[4];
+    
+    // 3. Extract vertex positions from the command buffer
+    p[0] = (RendererPosition){ .x = (GLshort)(int16_t)(gpu->gp0_command_buffer.buffer[1] & 0xFFFF), .y = (GLshort)(int16_t)(gpu->gp0_command_buffer.buffer[1] >> 16) };
+    p[1] = (RendererPosition){ .x = (GLshort)(int16_t)(gpu->gp0_command_buffer.buffer[3] & 0xFFFF), .y = (GLshort)(int16_t)(gpu->gp0_command_buffer.buffer[3] >> 16) };
+    p[2] = (RendererPosition){ .x = (GLshort)(int16_t)(gpu->gp0_command_buffer.buffer[5] & 0xFFFF), .y = (GLshort)(int16_t)(gpu->gp0_command_buffer.buffer[5] >> 16) };
+    p[3] = (RendererPosition){ .x = (GLshort)(int16_t)(gpu->gp0_command_buffer.buffer[7] & 0xFFFF), .y = (GLshort)(int16_t)(gpu->gp0_command_buffer.buffer[7] >> 16) };
+    
+    // 4. Extract the raw UV and CLUT/TPage data words
+    uint32_t uv_word0 = gpu->gp0_command_buffer.buffer[2];
+    uint32_t uv_word1 = gpu->gp0_command_buffer.buffer[4];
+    uint32_t uv_word2 = gpu->gp0_command_buffer.buffer[6];
+    uint32_t uv_word3 = gpu->gp0_command_buffer.buffer[8];
+
+    // 5. Calculate the FINAL texture coordinates by adding the tpage base
+    t[0] = (RendererTexCoord){ .u = (uint8_t)(uv_word0 & 0xFF) + gpu->tpage_x_base, .v = (uint8_t)((uv_word0 >> 8) & 0xFF) + gpu->tpage_y_base };
+    t[1] = (RendererTexCoord){ .u = (uint8_t)(uv_word1 & 0xFF) + gpu->tpage_x_base, .v = (uint8_t)((uv_word1 >> 8) & 0xFF) + gpu->tpage_y_base };
+    t[2] = (RendererTexCoord){ .u = (uint8_t)(uv_word2 & 0xFF) + gpu->tpage_x_base, .v = (uint8_t)((uv_word2 >> 8) & 0xFF) + gpu->tpage_y_base };
+    t[3] = (RendererTexCoord){ .u = (uint8_t)(uv_word3 & 0xFF) + gpu->tpage_x_base, .v = (uint8_t)((uv_word3 >> 8) & 0xFF) + gpu->tpage_y_base };
+
+    // 6. Extract CLUT and TPage info
+    uint16_t clut = (uint16_t)(uv_word0 >> 16);
+    uint16_t tpage = (uint16_t)(uv_word1 >> 16);
+
+    // 7. Call our NEW renderer function with the correct, textured data
+    renderer_push_textured_quad(&gpu->renderer, p, t, clut, tpage);
 }
 
 /** GP0(0x38): Shaded Opaque Quad */
@@ -436,6 +471,8 @@ void gpu_gp0(Gpu* gpu, uint32_t command) {
     if (gpu->gp0_words_remaining == 0) {
         // Start of a new command
         uint8_t opcode = (uint8_t)(command >> 24);
+        printf("~ GP0: Received Command 0x%02x (Full Value: 0x%08x)\n", opcode, command);
+
         uint32_t expected_len = 0; void (*handler)(Gpu*) = NULL;
         gpu->gp0_current_opcode = opcode; clear_gp0_command_buffer(gpu);
 

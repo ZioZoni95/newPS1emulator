@@ -21,6 +21,11 @@ typedef struct {
     GLubyte r, g, b; // OpenGL types (GLubyte is uint8_t)
 } RendererColor;
 
+//activating and defining the RendererTexCoord struct.
+// Using GLshort is better than GLubyte because texture coordinates can be > 255.
+typedef struct {
+    GLshort u, v; // Using GLshort to match VRAM's coordinate space (0-1023)
+} RendererTexCoord;
 // Add RendererTexCoord struct later if needed:
 // typedef struct { GLubyte u, v; } RendererTexCoord;
 
@@ -36,9 +41,11 @@ typedef struct {
     GLuint vao;             // Vertex Array Object: Groups VBO bindings and attribute pointers
     GLuint position_buffer; // Vertex Buffer Object (VBO) storing vertex positions
     GLuint color_buffer;    // Vertex Buffer Object (VBO) storing vertex colors
+    GLuint texcoord_buffer; // VBO for texture coordinates
+    
     // GLuint texcoord_buffer; // VBO for texture coordinates (future implementation)
     GLuint shader_program;  // ID of the compiled and linked GLSL shader program
-
+    GLuint vram_texture_id; // VRAM 
     // Shader Uniform Location
     GLint uniform_offset_loc; // Location ID of the 'offset' uniform in the vertex shader
 
@@ -46,7 +53,8 @@ typedef struct {
     // These hold the data pushed by the GPU command handlers.
     RendererPosition positions_data[VERTEX_BUFFER_LEN]; // CPU buffer for vertex positions
     RendererColor colors_data[VERTEX_BUFFER_LEN];       // CPU buffer for vertex colors
-
+    //CPU-side buffer for texture coordinates, matching the others.
+    RendererTexCoord texcoords_data[VERTEX_BUFFER_LEN];
     // State Tracking
     uint32_t vertex_count;      // Number of vertices currently buffered in the CPU-side arrays
     bool initialized;           // Flag indicating if the renderer has been successfully initialized
@@ -122,6 +130,9 @@ void renderer_destroy(Renderer* renderer);
  * @param location A string indicating where the check is being performed.
  */
 void check_gl_error(const char* location);
+
+//added 17/06/25
+void renderer_push_textured_quad(Renderer* renderer, RendererPosition pos[4], RendererTexCoord tex[4], uint16_t clut, uint16_t tpage);
 
 
 #endif // RENDERER_H

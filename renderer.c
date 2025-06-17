@@ -30,52 +30,55 @@ void check_gl_error(const char* location) {
 // --- GLSL Shader Source ---
 // Based on Guide Section 5.3 and 5.4
 
-// Vertex Shader: Transforms PSX VRAM coordinates and colors to OpenGL format.
+// Vertex Shader: Now accepts texcoords and passes them to the fragment shader.
 const char* vertex_shader_source =
     "#version 330 core\n"
-    // Input attributes from VBOs (locations match glVertexAttribIPointer setup)
-    "layout (location = 0) in ivec2 vertex_position; // PSX VRAM coords (int16)\n"
-    "layout (location = 1) in uvec3 vertex_color;    // PSX BGR color (uint8)\n"
+    "layout (location = 0) in ivec2 vertex_position;\n"
+    "layout (location = 1) in uvec3 vertex_color;\n"
+    "layout (location = 2) in ivec2 vertex_texcoord; // This line was likely missing\n"
     "\n"
-    // Uniform: A single value passed to the shader for a batch of vertices
-    "uniform ivec2 offset; // Drawing offset (applied to vertex_position)\n"
+    "uniform ivec2 offset;\n"
     "\n"
-    // Output: Color passed to the fragment shader (interpolated)
     "out vec3 color;\n"
+    "out vec2 texcoord;\n"
     "\n"
     "void main() {\n"
-    // Apply the drawing offset
     "    ivec2 p = vertex_position + offset;\n"
-    "\n"
-    // Convert X coordinate from PSX VRAM (0..1023) to OpenGL NDC (-1.0..+1.0)
     "    float xpos = (float(p.x) / 512.0) - 1.0;\n"
-    "\n"
-    // Convert Y coordinate from PSX VRAM (0..511, top-to-bottom) to OpenGL NDC (-1.0..+1.0, bottom-to-top)
-    "    float ypos = 1.0 - (float(p.y) / 256.0); // Flip Y axis\n"
-    "\n"
-    // Set the final position for this vertex. Z=0 (2D), W=1 (position).
+    "    float ypos = 1.0 - (float(p.y) / 256.0);\n"
     "    gl_Position = vec4(xpos, ypos, 0.0, 1.0);\n"
     "\n"
-    // Convert color from 8-bit BGR to 32-bit float RGB [0.0..1.0]
-    "    color = vec3(float(vertex_color.r) / 255.0,\n" // PSX BGR maps to vertex_color.r=B, .g=G, .b=R? No, use BGR struct. Corrected color mapping.
-    "                   float(vertex_color.g) / 255.0,\n"
-    "                   float(vertex_color.b) / 255.0);\n"
+    "    color = vec3(float(vertex_color.r) / 255.0,\n"
+    "                 float(vertex_color.g) / 255.0,\n"
+    "                 float(vertex_color.b) / 255.0);\n"
+    "\n"
+    // Normalize texcoords from VRAM space (e.g., 0-1023) to texture space (0.0-1.0)
+    "    texcoord = vec2(float(vertex_texcoord.x) / 1024.0, float(vertex_texcoord.y) / 512.0);\n"
     "}\n";
 
-// Fragment Shader: Determines the final color of each pixel fragment.
+// Fragment Shader: Now uses a texture sampler to determine pixel color.
 const char* fragment_shader_source =
     "#version 330 core\n"
-    // Input: Color interpolated from the vertex shader outputs
-    "in vec3 color;\n"
+    "in vec2 texcoord;\n"
     "\n"
-    // Output: Final color of the fragment (RGBA)
+    "uniform sampler2D vram_texture;\n"
+    "\n"
     "out vec4 frag_color;\n"
     "\n"
     "void main() {\n"
-    // Set fragment color using the interpolated vertex color, alpha = 1.0 (opaque)
-    "    frag_color = vec4(color, 1.0);\n"
+    "    // 1. Sample the color (including alpha) from the VRAM texture\n"
+    "    vec4 tex_color = texture(vram_texture, texcoord);\n"
+    "\n"
+    "    // 2. If the sampled color's alpha is 0, it means it's a transparent pixel.\n"
+    "    // The 'discard' keyword tells the GPU to not draw this pixel at all.\n"
+    "    if (tex_color.a == 0.0) {\n"
+    "        discard;\n"
+    "    }\n"
+    "\n"
+    "    // 3. For visible pixels, use the color from the texture (tex_color.rgb),\n"
+    "    //    but force the final output alpha to be 1.0 (fully opaque).\n"
+    "    frag_color = vec4(tex_color.rgb, 1.0);\n"
     "}\n";
-
 
 // --- OpenGL Helper Functions ---
 
@@ -162,27 +165,25 @@ bool renderer_init(Renderer* renderer) {
     printf("Initializing Renderer...\n");
     renderer->initialized = false;
     renderer->vertex_count = 0;
-    // Clear CPU-side buffers initially (optional but good practice)
+    
+    // Clear all CPU-side buffers initially
     memset(renderer->positions_data, 0, sizeof(renderer->positions_data));
     memset(renderer->colors_data, 0, sizeof(renderer->colors_data));
+    memset(renderer->texcoords_data, 0, sizeof(renderer->texcoords_data));
 
-
-    // Compile Shaders
-    printf("Compiling vertex shader...\n");
+    // --- 1. Compile and Link Shaders ---
+    printf("Compiling Shaders...\n");
     GLuint vs = compile_shader(vertex_shader_source, GL_VERTEX_SHADER);
-    printf("Compiling fragment shader...\n");
     GLuint fs = compile_shader(fragment_shader_source, GL_FRAGMENT_SHADER);
     if (vs == 0 || fs == 0) {
         fprintf(stderr, "Renderer Init Failed: Shader compilation error.\n");
-        if (vs != 0) glDeleteShader(vs); // Clean up if one succeeded
+        if (vs != 0) glDeleteShader(vs);
         if (fs != 0) glDeleteShader(fs);
         return false;
     }
 
-    // Link Program
     printf("Linking shader program...\n");
     renderer->shader_program = link_program(vs, fs);
-    // Delete individual shaders now that they are linked into the program
     glDeleteShader(vs);
     glDeleteShader(fs);
     if (renderer->shader_program == 0) {
@@ -191,108 +192,88 @@ bool renderer_init(Renderer* renderer) {
     }
     check_gl_error("After linking program");
 
-
-    // Get Uniform Location for the drawing offset
+    // --- 2. Get Shader Uniform Locations ---
+    // It's good practice to do this once after linking.
+    glUseProgram(renderer->shader_program); // Bind program to get/set uniforms
+    
     renderer->uniform_offset_loc = glGetUniformLocation(renderer->shader_program, "offset");
     if (renderer->uniform_offset_loc < 0) {
-        // This isn't fatal, but offset won't work. Check for GL errors too.
-        fprintf(stderr, "Warning: Could not find uniform 'offset'. Draw offset will not work.\n");
-        check_gl_error("glGetUniformLocation offset"); // Check if there was an error other than not found
+        fprintf(stderr, "Warning: Could not find uniform 'offset'.\n");
     } else {
         printf("Found uniform 'offset' at location: %d\n", renderer->uniform_offset_loc);
-        // Set initial offset to 0,0
-        glUseProgram(renderer->shader_program); // Need to bind program to set uniform
-        glUniform2i(renderer->uniform_offset_loc, 0, 0);
-        glUseProgram(0); // Unbind program
+        glUniform2i(renderer->uniform_offset_loc, 0, 0); // Set initial offset
     }
-    check_gl_error("After getting/setting offset uniform");
+    
+    GLint vram_texture_loc = glGetUniformLocation(renderer->shader_program, "vram_texture");
+    if (vram_texture_loc < 0) {
+         fprintf(stderr, "Warning: Could not find uniform 'vram_texture'.\n");
+    } else {
+        printf("Found uniform 'vram_texture' at location: %d\n", vram_texture_loc);
+        glUniform1i(vram_texture_loc, 0); // Tell shader sampler to use texture unit 0
+    }
 
+    glUseProgram(0); // Unbind program
+    check_gl_error("After getting/setting uniforms");
 
-    // --- Create Vertex Array Object (VAO) ---
-    // VAO stores the links between VBOs and shader attributes.
-    // Based on Guide Section 5.6
+    // --- 3. Create Vertex Array Object (VAO) ---
+    // The VAO MUST be created and bound before configuring VBOs and attribute pointers.
     printf("Creating VAO...\n");
     glGenVertexArrays(1, &renderer->vao);
-    glBindVertexArray(renderer->vao); // Bind the VAO to make it active
+    glBindVertexArray(renderer->vao);
     printf("VAO created (ID: %u) and bound.\n", renderer->vao);
     check_gl_error("After creating/binding VAO");
 
+    // --- 4. Create and Configure ALL Vertex Buffer Objects (VBOs) ---
 
-    // --- Create and Configure Position Vertex Buffer Object (VBO) ---
+    // Position VBO (Location 0)
     printf("Creating Position VBO...\n");
     glGenBuffers(1, &renderer->position_buffer);
-    glBindBuffer(GL_ARRAY_BUFFER, renderer->position_buffer); // Bind the new buffer to the GL_ARRAY_BUFFER target
-    printf("Position VBO created (ID: %u) and bound.\n", renderer->position_buffer);
+    glBindBuffer(GL_ARRAY_BUFFER, renderer->position_buffer);
+    glBufferData(GL_ARRAY_BUFFER, VERTEX_BUFFER_LEN * sizeof(RendererPosition), NULL, GL_DYNAMIC_DRAW);
+    glEnableVertexAttribArray(0);
+    glVertexAttribIPointer(0, 2, GL_SHORT, 0, (void*)0);
+    printf("Position VBO configured for attribute location 0.\n");
+    check_gl_error("After configuring Position VBO");
 
-    // Allocate buffer storage on the GPU. We'll upload data later using glBufferSubData.
-    // GL_DYNAMIC_DRAW is a hint that the data will be modified frequently.
-    glBufferData(GL_ARRAY_BUFFER,               // Target buffer type
-                 VERTEX_BUFFER_LEN * sizeof(RendererPosition), // Total buffer size in bytes
-                 NULL,                         // Initial data (none)
-                 GL_DYNAMIC_DRAW);             // Usage hint
-    printf("Position VBO allocated %lu bytes.\n", VERTEX_BUFFER_LEN * sizeof(RendererPosition));
-    check_gl_error("After position VBO glBufferData");
-
-    // --- Link Position VBO to Shader Attribute ---
-    // Get the location of the 'vertex_position' attribute in the shader (should be 0 as per layout qualifier)
-    GLint pos_attrib_loc = glGetAttribLocation(renderer->shader_program, "vertex_position");
-     if (pos_attrib_loc < 0) { fprintf(stderr, "Warning: Could not find attribute 'vertex_position'.\n"); }
-     else { printf("Attribute 'vertex_position' found at location %d.\n", pos_attrib_loc); }
-
-    // Enable this vertex attribute array
-    glEnableVertexAttribArray(pos_attrib_loc); // Use the obtained location
-
-    // Specify how OpenGL should interpret the data in the VBO for this attribute
-    glVertexAttribIPointer(pos_attrib_loc,       // Attribute location in the shader
-                           2,                  // Number of components per vertex (x, y)
-                           GL_SHORT,           // Data type of each component (signed 16-bit int)
-                           0, // Stride (0 = tightly packed) --> Or sizeof(RendererPosition)? Set 0 for now.
-                           (void*)0);          // Offset of the first component in the buffer
-    printf("Position VBO linked to vertex shader attribute location %d.\n", pos_attrib_loc);
-    check_gl_error("After setting position attribute pointer");
-
-
-    // --- Create and Configure Color Vertex Buffer Object (VBO) ---
+    // Color VBO (Location 1)
     printf("Creating Color VBO...\n");
     glGenBuffers(1, &renderer->color_buffer);
     glBindBuffer(GL_ARRAY_BUFFER, renderer->color_buffer);
-    printf("Color VBO created (ID: %u) and bound.\n", renderer->color_buffer);
-
-    // Allocate storage
     glBufferData(GL_ARRAY_BUFFER, VERTEX_BUFFER_LEN * sizeof(RendererColor), NULL, GL_DYNAMIC_DRAW);
-    printf("Color VBO allocated %lu bytes.\n", VERTEX_BUFFER_LEN * sizeof(RendererColor));
-    check_gl_error("After color VBO glBufferData");
+    glEnableVertexAttribArray(1);
+    glVertexAttribIPointer(1, 3, GL_UNSIGNED_BYTE, 0, (void*)0);
+    printf("Color VBO configured for attribute location 1.\n");
+    check_gl_error("After configuring Color VBO");
 
-    // --- Link Color VBO to Shader Attribute ---
-    GLint col_attrib_loc = glGetAttribLocation(renderer->shader_program, "vertex_color");
-     if (col_attrib_loc < 0) { fprintf(stderr, "Warning: Could not find attribute 'vertex_color'.\n"); }
-     else { printf("Attribute 'vertex_color' found at location %d.\n", col_attrib_loc); }
+    // TexCoord VBO (Location 2)
+    printf("Creating TexCoord VBO...\n");
+    glGenBuffers(1, &renderer->texcoord_buffer);
+    glBindBuffer(GL_ARRAY_BUFFER, renderer->texcoord_buffer);
+    glBufferData(GL_ARRAY_BUFFER, VERTEX_BUFFER_LEN * sizeof(RendererTexCoord), NULL, GL_DYNAMIC_DRAW);
+    glEnableVertexAttribArray(2);
+    glVertexAttribIPointer(2, 2, GL_SHORT, 0, (void*)0);
+    printf("TexCoord VBO configured for attribute location 2.\n");
+    check_gl_error("After configuring TexCoord VBO");
 
-    glEnableVertexAttribArray(col_attrib_loc);
+    // --- 5. Create VRAM Texture Object ---
+    printf("Creating VRAM texture object...\n");
+    glGenTextures(1, &renderer->vram_texture_id);
+    glBindTexture(GL_TEXTURE_2D, renderer->vram_texture_id);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB5_A1, 1024, 512, 0, GL_RGBA, GL_UNSIGNED_SHORT_5_5_5_1, NULL);
+    printf("VRAM texture created (ID: %u).\n", renderer->vram_texture_id);
+    check_gl_error("After creating VRAM texture");
 
-    // Specify data format for the color attribute
-    glVertexAttribIPointer(col_attrib_loc,       // Attribute location
-                           3,                  // Number of components (r, g, b)
-                           GL_UNSIGNED_BYTE,   // Data type (unsigned 8-bit int)
-                           0, // Stride (0 = tightly packed) --> Or sizeof(RendererColor)? Set 0 for now.
-                           (void*)0);          // Offset
-    printf("Color VBO linked to vertex shader attribute location %d.\n", col_attrib_loc);
-    check_gl_error("After setting color attribute pointer");
+    // --- 6. Unbind objects to clean up state ---
+    glBindVertexArray(0);
+    glBindBuffer(GL_ARRAY_BUFFER, 0);
+    glBindTexture(GL_TEXTURE_2D, 0);
+    printf("VAO and VBOs unbound.\n");
 
-
-    // --- Unbind ---
-    glBindVertexArray(0); // Unbind the VAO
-    glBindBuffer(GL_ARRAY_BUFFER, 0); // Unbind the VBO from the target
-    printf("VAO and VBO unbound.\n");
-
-
-    // --- Initial GL State ---
-    // Set the default clear color to black
+    // --- 7. Set Initial GL State ---
     glClearColor(0.0f, 0.0f, 0.0f, 1.0f);
     check_gl_error("After glClearColor");
-
-    // Potentially enable depth testing if needed later
-    // glEnable(GL_DEPTH_TEST);
 
     renderer->initialized = true;
     printf("Renderer Initialized Successfully.\n");
@@ -363,14 +344,14 @@ void renderer_push_quad(Renderer* renderer, RendererPosition pos[4], RendererCol
 
 // Uploads buffered data and performs the OpenGL draw call.
 void renderer_draw(Renderer* renderer) {
-     if (!renderer->initialized) {
-         fprintf(stderr, "Renderer Error: Draw called before initialization.\n");
-         return;
-     }
-     if (renderer->vertex_count == 0) {
-        // printf("Renderer: Draw called with 0 vertices, skipping.\n"); // Optional info
-        return; // Nothing to draw
-     }
+    if (!renderer->initialized) {
+        fprintf(stderr, "Renderer Error: Draw called before initialization.\n");
+        return;
+    }
+    if (renderer->vertex_count == 0) {
+        // Nothing to draw
+        return;
+    }
 
     printf("Renderer: Drawing %u vertices...\n", renderer->vertex_count);
 
@@ -378,24 +359,36 @@ void renderer_draw(Renderer* renderer) {
     glBindVertexArray(renderer->vao); check_gl_error("draw - glBindVertexArray");
 
     // --- Upload Buffered Vertex Data via glBufferSubData ---
+    
+    // Upload position data (no change)
     printf("  Uploading position data (%lu bytes)...\n", renderer->vertex_count * sizeof(RendererPosition));
     glBindBuffer(GL_ARRAY_BUFFER, renderer->position_buffer); check_gl_error("draw - glBindBuffer pos");
     glBufferSubData(GL_ARRAY_BUFFER, 0, renderer->vertex_count * sizeof(RendererPosition), renderer->positions_data);
     check_gl_error("draw - glBufferSubData pos");
 
+    // Upload color data (no change)
     printf("  Uploading color data (%lu bytes)...\n", renderer->vertex_count * sizeof(RendererColor));
     glBindBuffer(GL_ARRAY_BUFFER, renderer->color_buffer); check_gl_error("draw - glBindBuffer col");
     glBufferSubData(GL_ARRAY_BUFFER, 0, renderer->vertex_count * sizeof(RendererColor), renderer->colors_data);
     check_gl_error("draw - glBufferSubData col");
+
+
+    // --- PROPOSED MODIFICATION START ---
+    // Add this block to upload the new texture coordinate data.
+    // It's identical to the blocks for position and color.
+    printf("  Uploading texcoord data (%lu bytes)...\n", renderer->vertex_count * sizeof(RendererTexCoord));
+    glBindBuffer(GL_ARRAY_BUFFER, renderer->texcoord_buffer); check_gl_error("draw - glBindBuffer tex");
+    glBufferSubData(GL_ARRAY_BUFFER, 0, renderer->vertex_count * sizeof(RendererTexCoord), renderer->texcoords_data);
+    check_gl_error("draw - glBufferSubData tex");
+    // --- PROPOSED MODIFICATION END ---
+
 
     glBindBuffer(GL_ARRAY_BUFFER, 0); // Unbind GL_ARRAY_BUFFER target
     // ------------------------------------------------------
 
     // Draw the buffered primitives (interpreted as triangles)
     printf("  Issuing glDrawArrays...\n");
-    glDrawArrays(GL_TRIANGLES,      // Mode: interpret vertices as triangles
-                 0,                 // Starting index in the enabled arrays
-                 renderer->vertex_count); // Number of vertices to render
+    glDrawArrays(GL_TRIANGLES, 0, renderer->vertex_count);
     check_gl_error("draw - glDrawArrays");
 
     // --- Unbind ---
@@ -455,3 +448,48 @@ void renderer_destroy(Renderer* renderer) {
     renderer->initialized = false;
     printf("Renderer Destroyed.\n");
 }
+
+// --- NEW FUNCTION IMPLEMENTATION ---
+// This is the implementation of the new function we added to the header.
+void renderer_push_textured_quad(Renderer* renderer, RendererPosition pos[4], RendererTexCoord tex[4], uint16_t clut, uint16_t tpage) {
+    if (!renderer->initialized) {
+        fprintf(stderr, "Renderer Error: push_textured_quad called before initialization.\n");
+        return;
+    }
+
+    if (renderer->vertex_count + 6 > VERTEX_BUFFER_LEN) {
+        printf("Renderer Info: Vertex buffer full, forcing draw before push_textured_quad.\n");
+        renderer_draw(renderer);
+    }
+
+    // NOTE: For a more advanced renderer, you would check if 'clut' or 'tpage'
+    // has changed and force a draw. For now, we will handle it simply.
+
+    printf("Renderer: Buffering Textured Quad (Start Index: %u)\n", renderer->vertex_count);
+
+    // Decompose quad into two triangles (0, 1, 2 and 0, 2, 3)
+    // Triangle 1
+    renderer->positions_data[renderer->vertex_count + 0] = pos[0];
+    renderer->texcoords_data[renderer->vertex_count + 0] = tex[0];
+    renderer->positions_data[renderer->vertex_count + 1] = pos[1];
+    renderer->texcoords_data[renderer->vertex_count + 1] = tex[1];
+    renderer->positions_data[renderer->vertex_count + 2] = pos[2];
+    renderer->texcoords_data[renderer->vertex_count + 2] = tex[2];
+
+    // Triangle 2
+    renderer->positions_data[renderer->vertex_count + 3] = pos[0];
+    renderer->texcoords_data[renderer->vertex_count + 3] = tex[0];
+    renderer->positions_data[renderer->vertex_count + 4] = pos[2];
+    renderer->texcoords_data[renderer->vertex_count + 4] = tex[2];
+    renderer->positions_data[renderer->vertex_count + 5] = pos[3];
+    renderer->texcoords_data[renderer->vertex_count + 5] = tex[3];
+
+    // For now, we push placeholder colors since the color attribute is still active.
+    // In a more advanced shader, we would disable the color attribute for textured draws.
+    for (int i=0; i<6; ++i) {
+        renderer->colors_data[renderer->vertex_count + i] = (RendererColor){128, 128, 128};
+    }
+
+    renderer->vertex_count += 6;
+}
+// --- END NEW FUNCTION ---

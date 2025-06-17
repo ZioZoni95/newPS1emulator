@@ -141,6 +141,10 @@ typedef struct Gpu { // Define struct Gpu
     uint16_t vram_load_h;             // Height of the image being loaded
     uint32_t vram_load_count;         // Counter for pixels transferred during current load
 
+    //members to store the calculated texture page base coordinates
+    uint16_t tpage_x_base;
+    uint16_t tpage_y_base;
+
     // --- VRAM ---
     Vram vram;                         // The 1MB Video RAM buffer
 
